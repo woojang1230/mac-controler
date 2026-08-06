@@ -70,36 +70,49 @@ printf '\r=== 뚜껑을 열어주세요 ===          \n'
 
 # 뚜껑을 열고 화면이 돌아올 여유.
 sleep 15
-kill $BEAT_PID 2>/dev/null || true
+{ kill $BEAT_PID; wait $BEAT_PID; } 2>/dev/null || true
 
 echo
 echo "=== 결과 ==="
 TOTAL=$(($(wc -l < "$BEAT") - 1))
-GAP=$(awk -F'\t' 'NR>2{d=$1-p; if(d>m){m=d; at=$2}} {p=$1} END{printf "%d %s", m, at}' "$BEAT")
+GAP=$(awk -F'\t' 'NR>2{d=$1-p; if(d>m){m=d; at=$2}} {p=$1} END{printf "%d %s", m+0, at}' "$BEAT")
 MAXGAP=${GAP%% *}
 GAPAT=${GAP##* }
+CLOSED=$(awk -F'\t' '$3=="Yes"' "$BEAT" | wc -l | tr -d ' ')
 
-printf '  샘플 수         : %s (2초 간격)\n' "$TOTAL"
-printf '  최대 공백       : %s초 (%s 무렵)\n' "$MAXGAP" "$GAPAT"
-printf '  닫힘 상태 샘플  : %s개\n' "$(awk -F'\t' '$3=="Yes"' "$BEAT" | wc -l | tr -d ' ')"
+printf '  샘플 수          : %s (2초 간격)\n' "$TOTAL"
+printf '  닫힘 상태 샘플   : %s개\n' "$CLOSED"
+printf '  최대 공백        : %s초 (%s 무렵)\n' "$MAXGAP" "$GAPAT"
 printf '  Wi-Fi active 샘플: %s개\n' "$(awk -F'\t' '$4=="active"' "$BEAT" | wc -l | tr -d ' ')"
 echo
 
+# 뚜껑이 닫힌 적이 없으면 아무것도 검증하지 못한 것이다.
+# 이 경우 "깨어 있었다"고 말하는 것은 거짓 통과다.
+if [ "$CLOSED" -eq 0 ]; then
+	echo "  ⚠️  테스트 무효 — 뚜껑이 닫힌 샘플이 하나도 없습니다."
+	echo "     뚜껑을 안 닫으셨거나, 닫힘 감지(AppleClamshellState)가 실패했습니다."
+	echo "     아무것도 검증되지 않았습니다. 다시 실행하세요."
+	exit 2
+fi
+
 if [ "$MAXGAP" -le 6 ]; then
-	echo "  ✅ 뚜껑을 닫은 동안에도 계속 깨어 있었습니다."
+	echo "  ✅ 뚜껑이 닫힌 ${CLOSED}개 샘플 구간 내내 깨어 있었습니다."
 else
-	echo "  ❌ ${MAXGAP}초 동안 멈췄습니다 — 잠들었을 가능성이 큽니다."
+	echo "  ❌ ${MAXGAP}초 동안 멈췄습니다 — 잠들었습니다."
 fi
 
 echo
 echo "=== 커널이 기록한 슬립/웨이크 (같은 시간대) ==="
-pmset -g log 2>/dev/null \
+# "Sleep/Wakes since boot:N" 같은 누적 카운터 줄은 이벤트가 아니다. 걸러낸다.
+EVENTS=$(pmset -g log 2>/dev/null \
 	| awk -v start="$WINDOW_START" '$0 >= start' \
-	| grep -E '\b(Sleep|Wake|DarkWake)\b' \
-	| head -12 \
-	|| echo "  (해당 이벤트 없음 — 잠들지 않았다는 뜻)"
+	| grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2} .*[[:space:]](Sleep|Wake|DarkWake)[[:space:]]' \
+	| head -12)
+if [ -n "$EVENTS" ]; then
+	echo "$EVENTS" | sed 's/^/  /'
+else
+	echo "  (슬립/웨이크 이벤트 없음 — 잠들지 않았다는 뜻)"
+fi
 
 echo
-echo "  * 뚜껑 닫힘 감지 여부는 '닫힘 상태 샘플' 로 확인하세요."
-echo "    0개라면 뚜껑이 안 닫혔거나 감지에 실패한 것이니 테스트가 무의미합니다."
 echo "  * 원본 기록: $BEAT"

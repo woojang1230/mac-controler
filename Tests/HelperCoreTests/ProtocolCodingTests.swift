@@ -1,0 +1,104 @@
+import Foundation
+import Testing
+
+@testable import HelperProtocol
+
+/// 앱과 헬퍼는 다른 프로세스다. 계약이 인코딩을 못 견디면 설치 직후에 터진다.
+///
+/// 연관값을 가진 enum 은 Codable 합성이 되긴 하지만 중첩 컨테이너를 쓰므로,
+/// 실제로 왕복이 되는지 눈으로 확인해 둔다.
+@Suite("XPC 계약 인코딩")
+struct ProtocolCodingTests {
+
+    private func roundTrip<T: Codable & Equatable>(_ value: T) throws -> T {
+        let data = try JSONEncoder().encode(value)
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    @Test(
+        "HelperRequest 왕복",
+        arguments: [
+            HelperRequest.engage(bootSessionUUID: "0F75BC79-DEB0-41CD-BF5E-250773293BD8"),
+            .release,
+            .heartbeat,
+            .status,
+        ]
+    )
+    func requestRoundTrip(_ request: HelperRequest) throws {
+        let data = try JSONEncoder().encode(request)
+        let decoded = try JSONDecoder().decode(HelperRequest.self, from: data)
+
+        // HelperRequest 는 Equatable 이 아니므로 케이스로 비교한다.
+        switch (request, decoded) {
+        case (.engage(let a), .engage(let b)):
+            #expect(a == b, "부팅 세션 UUID 가 살아남아야 고아 감지가 동작한다")
+        case (.release, .release), (.heartbeat, .heartbeat), (.status, .status):
+            break
+        default:
+            Issue.record("케이스가 바뀌었다: \(request) → \(decoded)")
+        }
+    }
+
+    @Test("HelperStatus 왕복 — nil 필드 포함")
+    func statusRoundTrip() throws {
+        let status = HelperStatus(
+            effectiveSleepDisabled: true,
+            baselineSleepDisabled: false,
+            engagedByUs: true,
+            engagedBootSessionUUID: "SESSION-A",
+            secondsSinceHeartbeat: 12.5
+        )
+        #expect(try roundTrip(status) == status)
+
+        // baseline 이 nil 인 상태(= engage 중 아님)도 왕복돼야 한다.
+        let idle = HelperStatus(
+            effectiveSleepDisabled: false,
+            baselineSleepDisabled: nil,
+            engagedByUs: false,
+            engagedBootSessionUUID: nil,
+            secondsSinceHeartbeat: nil
+        )
+        #expect(try roundTrip(idle) == idle)
+    }
+
+    @Test("HelperReply 왕복 — 연관값이 붙은 모든 케이스")
+    func replyRoundTrip() throws {
+        let status = HelperStatus(
+            effectiveSleepDisabled: true, baselineSleepDisabled: false,
+            engagedByUs: true, engagedBootSessionUUID: "S", secondsSinceHeartbeat: 1)
+
+        let cases: [HelperReply] = [
+            .applied(status), .alreadyInDesiredState(status),
+            .notConfirmed(status), .status(status),
+            .denied(reason: "IOReturn 0xE00002C1"),
+        ]
+
+        for reply in cases {
+            let data = try JSONEncoder().encode(reply)
+            let decoded = try JSONDecoder().decode(HelperReply.self, from: data)
+            switch (reply, decoded) {
+            case (.applied(let a), .applied(let b)),
+                 (.alreadyInDesiredState(let a), .alreadyInDesiredState(let b)),
+                 (.notConfirmed(let a), .notConfirmed(let b)),
+                 (.status(let a), .status(let b)):
+                #expect(a == b)
+            case (.denied(let a), .denied(let b)):
+                #expect(a == b)
+            default:
+                Issue.record("케이스가 바뀌었다: \(reply) → \(decoded)")
+            }
+        }
+    }
+
+    @Test("프로토콜 버전과 하트비트 상수가 일관적이다")
+    func constantsAreSane() {
+        #expect(HelperConstants.heartbeatInterval < HelperConstants.heartbeatTimeout,
+                "보내는 주기가 타임아웃보다 길면 멀쩡한 앱이 끊긴 것으로 오인된다")
+        #expect(HelperConstants.heartbeatTimeout >= HelperConstants.heartbeatInterval * 2,
+                "한 번 걸러도 버틸 여유가 있어야 한다")
+        #expect(HelperStatus(
+            effectiveSleepDisabled: false, baselineSleepDisabled: nil,
+            engagedByUs: false, engagedBootSessionUUID: nil, secondsSinceHeartbeat: nil
+        ).protocolVersion == HelperConstants.protocolVersion)
+    }
+}

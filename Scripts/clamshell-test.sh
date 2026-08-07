@@ -4,10 +4,20 @@
 # 두 번째 기기가 필요 없다. 뚜껑이 닫힌 동안 2초마다 심장박동을 파일에 적고,
 # 열었을 때 끊긴 구간이 있는지 본다. 잠들었다면 그 시간만큼 공백이 남는다.
 #
-# 사용법:  ./Scripts/clamshell-test.sh [닫아둘_초]     (기본 120)
+# 사용법:
+#   ./Scripts/clamshell-test.sh [닫아둘_초]              본 테스트 (토글 ON, 안 자야 정상)
+#   ./Scripts/clamshell-test.sh [닫아둘_초] --control    대조군  (토글 OFF, 자야 정상)
+#
+# ⚠️ 대조군을 먼저 돌려라. 토글을 꺼도 맥이 안 잔다면(외부 디스플레이 연결,
+#    다른 도구가 슬립을 막는 중 등) 본 테스트의 "안 잤다"는 결과는 아무것도
+#    증명하지 못한다. 대조군이 성립해야 본 테스트가 의미를 갖는다.
 set -euo pipefail
 
 DURATION="${1:-120}"
+MODE="${2:-}"
+CONTROL=0
+[ "$MODE" = "--control" ] && CONTROL=1
+
 STAMP=$(date +%Y%m%d-%H%M%S)
 BEAT="/tmp/clamshell-test-$STAMP.tsv"
 WINDOW_START=$(date '+%Y-%m-%d %H:%M:%S')
@@ -15,11 +25,15 @@ WINDOW_START=$(date '+%Y-%m-%d %H:%M:%S')
 sleep_disabled() { ioreg -r -k SleepDisabled -d 1 | awk -F'= ' '/"SleepDisabled"/{print $2; exit}'; }
 lid_closed()     { ioreg -r -k AppleClamshellState -d 1 | awk -F'= ' '/"AppleClamshellState"/{print $2; exit}'; }
 power_source()   { pmset -g batt | awk -F"'" '/Now drawing/{print $2; exit}'; }
-external_count() {
-	system_profiler SPDisplaysDataType 2>/dev/null | grep -c "Display Type: External" || true
-}
+external_count() { system_profiler SPDisplaysDataType 2>/dev/null | grep -c "Display Type: External" || true; }
 
-echo "=== 사전 조건 ==="
+if [ "$CONTROL" -eq 1 ]; then
+	echo "=== 대조군 테스트 — 토글을 끈 상태에서 '제대로 자는가' ==="
+else
+	echo "=== 본 테스트 — 토글을 켠 상태에서 '안 자는가' ==="
+fi
+echo
+echo "사전 조건"
 printf '  전원          : %s\n' "$(power_source)"
 printf '  SleepDisabled : %s\n' "$(sleep_disabled)"
 printf '  뚜껑          : %s\n' "$(lid_closed)"
@@ -27,17 +41,28 @@ printf '  외부 디스플레이: %s대\n' "$(external_count)"
 echo
 
 FAIL=0
-if [ "$(sleep_disabled)" != "Yes" ]; then
-	echo "❌ SleepDisabled 가 켜져 있지 않습니다."
-	echo "   메뉴바 아이콘 > '뚜껑 닫아도 안 자기' 를 먼저 켜세요."
-	FAIL=1
+if [ "$CONTROL" -eq 1 ]; then
+	if [ "$(sleep_disabled)" = "Yes" ]; then
+		echo "❌ 대조군은 SleepDisabled 가 꺼져 있어야 합니다."
+		echo "   메뉴바 아이콘 > '뚜껑 닫아도 안 자기' 를 먼저 끄세요."
+		FAIL=1
+	fi
+	echo "ℹ️  이 테스트에서는 맥이 **실제로 잠듭니다.** 뚜껑을 열면 깨어납니다."
+else
+	if [ "$(sleep_disabled)" != "Yes" ]; then
+		echo "❌ SleepDisabled 가 켜져 있지 않습니다."
+		echo "   메뉴바 아이콘 > '뚜껑 닫아도 안 자기' 를 먼저 켜세요."
+		echo "   (이 상태로 돌리면 맥이 진짜로 잠듭니다. 그게 목적이면 --control 을 쓰세요.)"
+		FAIL=1
+	fi
 fi
+
 if [ "$(power_source)" != "AC Power" ]; then
-	echo "⚠️  배터리 전원입니다. 첫 테스트는 전원을 꽂고 하는 것을 권합니다."
+	echo "⚠️  배터리 전원입니다. 전원을 꽂고 하는 것을 권합니다."
 fi
 if [ "$(external_count)" -gt 0 ]; then
 	echo "⚠️  외부 디스플레이가 연결돼 있습니다. 이 상태에서는 원래 안 자므로"
-	echo "   이 앱이 동작하는지 알 수 없습니다. 뽑고 다시 하세요."
+	echo "   두 테스트 모두 의미가 없습니다. 뽑고 다시 하세요."
 	FAIL=1
 fi
 [ "$FAIL" -eq 1 ] && exit 1
@@ -53,8 +78,9 @@ printf 'epoch\ttime\tlid\twifi\n' > "$BEAT"
 	done
 ) &
 BEAT_PID=$!
-trap 'kill $BEAT_PID 2>/dev/null || true' EXIT
+trap '{ kill $BEAT_PID; wait $BEAT_PID; } 2>/dev/null || true' EXIT
 
+echo
 echo "=== 지금 뚜껑을 닫으세요 ==="
 echo "    ${DURATION}초 뒤에 다시 열어주세요. 기록: $BEAT"
 echo
@@ -87,7 +113,10 @@ printf '  Wi-Fi active 샘플: %s개\n' "$(awk -F'\t' '$4=="active"' "$BEAT" | w
 echo
 
 # 뚜껑이 닫힌 적이 없으면 아무것도 검증하지 못한 것이다.
-# 이 경우 "깨어 있었다"고 말하는 것은 거짓 통과다.
+# 이 경우 어떤 판정을 내놓든 거짓이다.
+#
+# 주의: 맥이 잠들면 샘플러도 멈추므로 대조군에서는 닫힘 샘플이 1~2개밖에
+# 안 잡힐 수 있다. 그것으로 충분하다 — 닫힘을 한 번이라도 관측했으면 된다.
 if [ "$CLOSED" -eq 0 ]; then
 	echo "  ⚠️  테스트 무효 — 뚜껑이 닫힌 샘플이 하나도 없습니다."
 	echo "     뚜껑을 안 닫으셨거나, 닫힘 감지(AppleClamshellState)가 실패했습니다."
@@ -95,10 +124,23 @@ if [ "$CLOSED" -eq 0 ]; then
 	exit 2
 fi
 
-if [ "$MAXGAP" -le 6 ]; then
-	echo "  ✅ 뚜껑이 닫힌 ${CLOSED}개 샘플 구간 내내 깨어 있었습니다."
+if [ "$CONTROL" -eq 1 ]; then
+	if [ "$MAXGAP" -gt 6 ]; then
+		echo "  ✅ 대조군 성립 — 토글을 끄니 ${MAXGAP}초 동안 잠들었습니다."
+		echo "     이제 본 테스트의 '안 잤다'가 우리 앱 덕분이라고 말할 수 있습니다."
+	else
+		echo "  ❌ 대조군 실패 — 토글을 껐는데도 잠들지 않았습니다 (공백 ${MAXGAP}초)."
+		echo "     다른 요인이 슬립을 막고 있습니다. 이 상태에서는 본 테스트가"
+		echo "     통과해도 우리 앱이 한 일이라고 말할 수 없습니다."
+		echo "     'make ax-verify' 의 '슬립 막는 프로세스' 목록을 확인하세요."
+	fi
 else
-	echo "  ❌ ${MAXGAP}초 동안 멈췄습니다 — 잠들었습니다."
+	if [ "$MAXGAP" -le 6 ]; then
+		echo "  ✅ 뚜껑이 닫힌 ${CLOSED}개 샘플 구간 내내 깨어 있었습니다."
+		echo "     (대조군을 아직 안 돌렸다면 --control 로 먼저 확인하세요.)"
+	else
+		echo "  ❌ ${MAXGAP}초 동안 멈췄습니다 — 잠들었습니다."
+	fi
 fi
 
 echo
@@ -111,7 +153,7 @@ EVENTS=$(pmset -g log 2>/dev/null \
 if [ -n "$EVENTS" ]; then
 	echo "$EVENTS" | sed 's/^/  /'
 else
-	echo "  (슬립/웨이크 이벤트 없음 — 잠들지 않았다는 뜻)"
+	echo "  (슬립/웨이크 이벤트 없음)"
 fi
 
 echo

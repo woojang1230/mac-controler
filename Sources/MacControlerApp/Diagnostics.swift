@@ -57,10 +57,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // 심볼 이름이 틀리면 아이콘이 빈칸으로 렌더되고 원인을 찾기 어렵다. 기동 시 한 번 확인한다.
-        let symbol = "laptopcomputer"
-        let symbolOK = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) != nil
-        Log.launch.notice("symbol=\(symbol, privacy: .public) resolves=\(symbolOK, privacy: .public)")
+        // 심볼 이름이 틀리면 아이콘이 빈칸으로 렌더되고 원인을 찾기 어렵다.
+        // 상태에 따라 쓰는 심볼 전부를 기동 시 한 번 확인한다.
+        for symbol in ["sun.max.fill", "moon.zzz", "exclamationmark.triangle"] {
+            let ok = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) != nil
+            Log.launch.notice("symbol=\(symbol, privacy: .public) resolves=\(ok, privacy: .public)")
+        }
+        Log.launch.notice("현재 심볼=\(AppModel.shared.menuBarSymbol, privacy: .public)")
 
         // 노치가 있는 맥에서는 메뉴바가 노치 좌/우 두 구간으로 쪼개진다.
         // 상태 아이템이 그 사이(노치 아래)에 놓이면 아이템은 정상인데 화면에 안 보인다.

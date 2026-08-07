@@ -237,9 +237,17 @@ final class AppModel {
         }
     }
 
+    /// 메뉴바에 그릴 SF Symbol.
+    ///
+    /// 기준은 **우리가 켰는가**(`engagedByUs`)다. 남이 켠 `SleepDisabled` 나
+    /// 외부 디스플레이 때문에 안 자는 경우까지 '켜짐'으로 보이면,
+    /// 이 앱이 지금 일하고 있는지를 아이콘으로 알 수 없다.
+    ///
+    /// 아이콘이 안 보이는 상태(`statusItemVisible == false`)를 여기서 경고
+    /// 아이콘으로 알리지 않는다 — 안 보이는 자리에 경고를 그려봐야 그것도
+    /// 안 보인다. 그 안내는 메뉴 본문이 맡는다.
     var menuBarSymbol: String {
-        if !statusItemVisible { return "exclamationmark.triangle" }
-        return isAwakeOnLidClose ? "laptopcomputer" : "moon.zzz"
+        engagedByUs ? "sun.max.fill" : "moon.zzz"
     }
 
     // MARK: - 아이콘 가시성

@@ -28,6 +28,7 @@ public struct IOKitPowerStateReader: PowerStateReading {
             lidClosed: property("AppleClamshellState") as? Bool ?? false,
             clamshellCausesSleep: property("AppleClamshellCausesSleep") as? Bool ?? true,
             sleepDisabled: property("SleepDisabled") as? Bool ?? false,
+            desiredSleepDisabled: SystemPowerSettings.readDesiredSleepDisabled(),
             powerSource: source,
             batteryPercent: percent,
             externalDisplayCount: Self.externalDisplayCount(),

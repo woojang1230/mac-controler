@@ -52,13 +52,30 @@ public struct SleepSwitch: Sendable {
         self.pollInterval = pollInterval
     }
 
+    /// 커널과 디스크가 **둘 다** 목표 값인가.
+    ///
+    /// 디스크 키가 없으면(nil) '슬립 차단 안 함' 과 같은 뜻이므로 false 로 본다.
+    private func settled(_ snapshot: PowerSnapshot, at desired: Bool) -> Bool {
+        snapshot.sleepDisabled == desired && (snapshot.desiredSleepDisabled ?? false) == desired
+    }
+
     public func apply(_ desired: Bool) -> Outcome {
         let start = Date()
+        let initial = reader.snapshot()
 
-        if reader.snapshot().sleepDisabled == desired {
-            Self.log.notice("이미 원하는 상태(\(desired, privacy: .public)) — SPI 호출 생략")
+        // ⚠️ 커널값만 보고 건너뛰면 안 된다.
+        //
+        // 영구 저장되는 것은 디스크 희망값이고, powerd 가 부팅마다 그 값을 커널에
+        // 다시 밀어넣는다. 둘이 갈라진 상태(헬퍼가 powerd 재적용보다 먼저 뜬 경우,
+        // 직전 쓰기가 notConfirmed 로 끝난 경우)에서 커널만 보고 '이미 원하는 상태'
+        // 라고 판단하면, 쓰기를 한 번도 하지 않고 호출자가 baseline 을 지운다.
+        // 그러면 디스크에 남은 값이 되살아나고 되돌릴 근거는 사라진다.
+        if settled(initial, at: desired) {
+            Self.log.notice("커널·디스크 모두 \(desired, privacy: .public) — SPI 호출 생략")
             return Outcome(code: kIOReturnSuccess, confirmed: true, elapsed: 0, effective: desired)
         }
+        Self.log.notice(
+            "적용 시작: 목표=\(desired, privacy: .public) 커널=\(initial.sleepDisabled, privacy: .public) 디스크=\(String(describing: initial.desiredSleepDisabled), privacy: .public)")
 
         let code = writer.write(desired)
         Self.log.notice(
@@ -71,18 +88,21 @@ public struct SleepSwitch: Sendable {
                 effective: reader.snapshot().sleepDisabled)
         }
 
-        // 여기서부터가 핵심 — 반환값이 아니라 커널을 본다.
-        var effective = reader.snapshot().sleepDisabled
-        while effective != desired, Date().timeIntervalSince(start) < confirmationTimeout {
+        // 여기서부터가 핵심 — 반환값이 아니라 실제 상태를 본다.
+        // 디스크는 즉시 반영되고, 커널은 powerd 를 거쳐 늦게 따라온다.
+        var snapshot = reader.snapshot()
+        while !settled(snapshot, at: desired), Date().timeIntervalSince(start) < confirmationTimeout {
             Thread.sleep(forTimeInterval: pollInterval)
-            effective = reader.snapshot().sleepDisabled
+            snapshot = reader.snapshot()
         }
 
         let elapsed = Date().timeIntervalSince(start)
-        let confirmed = (effective == desired)
+        let confirmed = settled(snapshot, at: desired)
         Self.log.notice(
-            "실적용 확인=\(confirmed, privacy: .public) 소요=\(String(format: "%.3f", elapsed), privacy: .public)초")
+            "확인=\(confirmed, privacy: .public) 소요=\(String(format: "%.3f", elapsed), privacy: .public)초 커널=\(snapshot.sleepDisabled, privacy: .public) 디스크=\(String(describing: snapshot.desiredSleepDisabled), privacy: .public)")
 
-        return Outcome(code: code, confirmed: confirmed, elapsed: elapsed, effective: effective)
+        return Outcome(
+            code: code, confirmed: confirmed, elapsed: elapsed,
+            effective: snapshot.sleepDisabled)
     }
 }

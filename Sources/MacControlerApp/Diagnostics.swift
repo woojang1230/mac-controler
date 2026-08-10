@@ -17,6 +17,11 @@ enum Log {
 /// 로는 외부에서 존재를 확인할 수 없다. 그래서 앱이 스스로 보고한다 —
 /// `NSStatusBarWindow` 가 자기 윈도우 목록에 있으면 아이템이 실제로 만들어진 것이다.
 final class AppDelegate: NSObject, NSApplicationDelegate {
+
+    func applicationWillTerminate(_ notification: Notification) {
+        AppModel.shared.releaseOnQuit()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         Task {
             // MenuBarExtra 가 상태 아이템을 붙일 시간을 준다.
@@ -53,7 +58,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let root = window.contentView {
                 Log.launch.notice("--- view tree ---")
                 dumpTree(root, depth: 0)
-                snapshot(root)
             }
         }
 
@@ -75,21 +79,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// SPI 링크와 권한 게이트를 확인한다.
+    /// SPI 링크를 확인한다. **읽기만 한다.**
     ///
-    /// 쓰기는 **현재 값과 같은 값으로만** 시도한다 — 거부되는 것이 정상이지만
-    /// 만에 하나 통과하더라도 시스템 상태가 변하지 않도록.
-    /// 이 앱은 비특권이므로 `kIOReturnNotPrivileged(0xE00002C1)` 가 나와야 하고,
-    /// 그것이 root 헬퍼가 필요하다는 설계의 실증이다.
+    /// 예전에는 여기서 "같은 값 쓰기"를 시도해 `kIOReturnNotPrivileged` 를 확인했다.
+    /// 그러나 앱에서 SPI 쓰기를 부르는 것 자체가 규칙 위반이고, 하필 그 '같은 값'을
+    /// 커널 실적용값에서 읽고 있었다 — 커널과 디스크가 갈라진 상태에서는 같은 값이
+    /// 아니다. 앱이 권한 상승된 채 실행되면 기동만으로 영구 설정을 덮어쓴다.
+    /// 링크 증명은 읽기만으로 충분하다.
     private static func probeSPI() {
         let desired = SystemPowerSettings.readDesiredSleepDisabled()
         Log.launch.notice(
-            "SPI 읽기: desiredSleepDisabled=\(String(describing: desired), privacy: .public) all=\(SystemPowerSettings.readAll().keys.sorted().joined(separator: ","), privacy: .public)")
-
-        let current = AppModel.shared.snapshot.sleepDisabled
-        let result = SystemPowerSettings.writeSleepDisabled(current)
-        Log.launch.notice(
-            "SPI 쓰기(같은 값 \(current, privacy: .public)) → IOReturn=0x\(String(format: "%08X", result), privacy: .public) (0xE00002C1=NotPrivileged 기대)")
+            "SPI 읽기: 디스크 희망값=\(String(describing: desired), privacy: .public) 키=\(SystemPowerSettings.readAll().keys.sorted().joined(separator: ","), privacy: .public)")
     }
 
     /// 헬퍼가 살아있고 XPC 로 응답하는지 확인한다.
@@ -106,29 +106,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             Log.launch.error(
                 "헬퍼 미연결: \(AppModel.shared.lastMessage ?? "사유 없음", privacy: .public)")
-        }
-    }
-
-    /// 상태 아이템이 그리는 픽셀을 파일로 떠낸다.
-    ///
-    /// 노치 아래나 화면 밖에 놓여 눈으로 확인할 수 없을 때, 아이콘이 실제로
-    /// 렌더되는지를 위치와 무관하게 증명하기 위한 것이다.
-    private static func snapshot(_ view: NSView) {
-        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
-            Log.launch.error("snapshot: bitmap rep 생성 실패")
-            return
-        }
-        view.cacheDisplay(in: view.bounds, to: rep)
-        guard let data = rep.representation(using: .png, properties: [:]) else {
-            Log.launch.error("snapshot: PNG 인코딩 실패")
-            return
-        }
-        let path = "/tmp/mc-shots/statusitem.png"
-        do {
-            try data.write(to: URL(fileURLWithPath: path))
-            Log.launch.notice("snapshot 저장: \(path, privacy: .public) (\(rep.pixelsWide)x\(rep.pixelsHigh))")
-        } catch {
-            Log.launch.error("snapshot 저장 실패: \(error.localizedDescription, privacy: .public)")
         }
     }
 

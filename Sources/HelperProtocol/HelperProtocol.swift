@@ -37,10 +37,15 @@ public enum HelperConstants {
     public static let maximumEngagement: TimeInterval = 4 * 3600
 }
 
-/// 앱 → 헬퍼. 엔드포인트는 의도적으로 셋뿐이다.
+/// 앱 → 헬퍼. 엔드포인트는 의도적으로 넷뿐이다.
 public enum HelperRequest: Codable, Sendable {
     /// 슬립 차단을 켠다. 헬퍼가 먼저 현재 값을 baseline 으로 저장한다.
-    case engage(bootSessionUUID: String)
+    ///
+    /// 부팅 세션 UUID 는 인자로 받지 않는다 — 헬퍼가 `IOPMrootDomain` 에서 직접
+    /// 읽을 수 있는 값을 클라이언트에게 받으면 노출 면적만 늘어난다.
+    /// 피어 인증이 원리적으로 불가능한 전제(DESIGN.md §3)에서는 받을 수 있는
+    /// 입력을 하나라도 줄이는 편이 낫다.
+    case engage
 
     /// baseline 값으로 되돌린다. 무조건 false 로 덮지 않는다.
     case release
@@ -88,6 +93,14 @@ public struct HelperStatus: Codable, Sendable, Equatable {
     /// engage 당시의 부팅 세션. 재부팅을 건너뛴 고아 상태를 감지한다.
     public var engagedBootSessionUUID: String?
 
+    /// 언제 engage 했는가.
+    ///
+    /// 앱이 재시작되면 자기가 engage 한 기억이 없다. 이 값이 있어야 진행 중인
+    /// engagement 를 인수해 하트비트를 재개하고 배터리·타임아웃 자동 해제를
+    /// 이어갈 수 있다. 없으면 앱은 토글이 켜진 것처럼 보여주면서 하트비트를
+    /// 안 보내고, 90초 뒤 워치독이 조용히 풀어버린다.
+    public var engagedAt: Date?
+
     /// 마지막 하트비트로부터 경과 시간(초). engage 중이 아니면 nil.
     public var secondsSinceHeartbeat: TimeInterval?
 
@@ -98,6 +111,7 @@ public struct HelperStatus: Codable, Sendable, Equatable {
         baselineSleepDisabled: Bool?,
         engagedByUs: Bool,
         engagedBootSessionUUID: String?,
+        engagedAt: Date? = nil,
         secondsSinceHeartbeat: TimeInterval?,
         protocolVersion: Int = HelperConstants.protocolVersion
     ) {
@@ -105,6 +119,7 @@ public struct HelperStatus: Codable, Sendable, Equatable {
         self.baselineSleepDisabled = baselineSleepDisabled
         self.engagedByUs = engagedByUs
         self.engagedBootSessionUUID = engagedBootSessionUUID
+        self.engagedAt = engagedAt
         self.secondsSinceHeartbeat = secondsSinceHeartbeat
         self.protocolVersion = protocolVersion
     }

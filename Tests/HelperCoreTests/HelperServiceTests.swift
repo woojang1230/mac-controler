@@ -25,7 +25,7 @@ struct EngageTests {
         let system = FakeSystem(sleepDisabled: false)
         let service = makeService(system: system, store: makeTemporaryStore())
 
-        _ = service.handle(.engage(bootSessionUUID: "SESSION-A"))
+        _ = service.handle(.engage)
         #expect(system.sleepDisabled == true)
 
         _ = service.handle(.release)
@@ -38,7 +38,7 @@ struct EngageTests {
         let system = FakeSystem(sleepDisabled: true)
         let service = makeService(system: system, store: makeTemporaryStore())
 
-        _ = service.handle(.engage(bootSessionUUID: "SESSION-A"))
+        _ = service.handle(.engage)
         _ = service.handle(.release)
 
         #expect(system.sleepDisabled == true,
@@ -53,7 +53,7 @@ struct EngageTests {
         let store = makeTemporaryStore()
         let service = makeService(system: system, store: store)
 
-        _ = service.handle(.engage(bootSessionUUID: "SESSION-A"))
+        _ = service.handle(.engage)
 
         let saved = try #require(store.load())
         #expect(saved.sleepDisabled == false, "켜기 **전** 값이 저장돼야 한다")
@@ -67,7 +67,7 @@ struct EngageTests {
         let store = makeTemporaryStore()
         let service = makeService(system: system, store: store)
 
-        let reply = service.handle(.engage(bootSessionUUID: "SESSION-A"))
+        let reply = service.handle(.engage)
 
         guard case .denied = reply else {
             Issue.record("쓰기 실패는 denied 여야 한다. 실제: \(reply)")
@@ -79,10 +79,10 @@ struct EngageTests {
     @Test("커널 반영이 확인되지 않으면 notConfirmed 를 돌려준다")
     func unconfirmedWriteReported() {
         let system = FakeSystem(sleepDisabled: false)
-        system.swallowWrite()  // 성공 반환하지만 값은 안 바뀜
+        system.freezeKernel()  // 디스크엔 쓰이지만 커널 반영은 안 됨
         let service = makeService(system: system, store: makeTemporaryStore())
 
-        let reply = service.handle(.engage(bootSessionUUID: "SESSION-A"))
+        let reply = service.handle(.engage)
         guard case .notConfirmed = reply else {
             Issue.record("IOReturn 성공만 믿으면 안 된다. 실제: \(reply)")
             return
@@ -94,14 +94,82 @@ struct EngageTests {
         let system = FakeSystem(sleepDisabled: false)
         let service = makeService(system: system, store: makeTemporaryStore())
 
-        _ = service.handle(.engage(bootSessionUUID: "SESSION-A"))
-        let reply = service.handle(.engage(bootSessionUUID: "SESSION-A"))
+        _ = service.handle(.engage)
+        let reply = service.handle(.engage)
 
         guard case .alreadyInDesiredState = reply else {
             Issue.record("두 번째 engage 는 alreadyInDesiredState 여야 한다. 실제: \(reply)")
             return
         }
         #expect(system.writeCalls.count == 1)
+    }
+}
+
+/// 커널 실적용값과 디스크 희망값이 갈라진 상태에서의 복원.
+///
+/// 되돌리기의 진짜 대상은 **디스크 값**이다. 그것만 영구 저장되고 powerd 가
+/// 부팅마다 커널에 다시 밀어넣기 때문이다. 커널값만 보고 "이미 원하는 상태"라고
+/// 판단해 조기 반환하면, 쓰기를 한 번도 하지 않고 baseline 만 지우게 되고
+/// 디스크에 남은 값이 되살아나 맥이 영영 안 잔다.
+@Suite("커널/디스크 괴리 시 복원")
+struct DivergedStateTests {
+
+    @Test("★ 부팅 직후 고아 복구 — 커널은 false 인데 디스크에 true 가 남아 있다")
+    func orphanRecoveryWritesDiskNotJustKernel() {
+        let store = makeTemporaryStore()
+
+        // 지난 세션에서 engage 한 채 종료됐다. baseline 은 '켜기 전 = false'.
+        let before = FakeSystem(sleepDisabled: false, bootSession: "SESSION-A")
+        _ = makeService(system: before, store: store)
+            .handle(.engage)
+
+        // 재부팅. 헬퍼(RunAtLoad)가 powerd 의 재적용보다 **먼저** 떴다 —
+        // 커널은 아직 false 로 보이지만 디스크에는 true 가 남아 있다.
+        let after = FakeSystem(
+            sleepDisabled: false, desiredSleepDisabled: true, bootSession: "SESSION-B")
+        let revived = makeService(system: after, store: store)
+        revived.recoverOrphanIfNeeded()
+
+        #expect(after.desiredSleepDisabled == false,
+                "디스크에 false 를 실제로 써야 한다. 안 쓰면 powerd 가 true 를 되살린다")
+        #expect(after.writeCalls.isEmpty == false,
+                "쓰기를 한 번도 하지 않고 baseline 만 지우면 복원 근거가 사라진다")
+
+        // powerd 가 뒤늦게 디스크 값을 반영해도 안전해야 한다.
+        after.powerdApplies()
+        #expect(after.sleepDisabled == false)
+    }
+
+    @Test("★ notConfirmed 로 끝난 engage 를 release 하면 디스크를 되돌린다")
+    func releaseAfterUnconfirmedEngageWritesDisk() {
+        let system = FakeSystem(sleepDisabled: false)
+        let service = makeService(system: system, store: makeTemporaryStore())
+
+        // engage 는 디스크에 true 를 쓰지만 커널 반영이 확인되지 않는다.
+        system.freezeKernel()
+        let engaged = service.handle(.engage)
+        guard case .notConfirmed = engaged else {
+            Issue.record("커널 미반영이면 notConfirmed 여야 한다. 실제: \(engaged)")
+            return
+        }
+        #expect(system.desiredSleepDisabled == true)
+
+        _ = service.handle(.release)
+
+        #expect(system.desiredSleepDisabled == false,
+                "커널이 false 로 보인다고 조기 반환하면 디스크의 true 가 남는다")
+        #expect(system.writeCalls.contains(false),
+                "false 를 실제로 쓴 적이 있어야 한다")
+    }
+
+    @Test("커널·디스크가 둘 다 목표와 같으면 쓰지 않는다")
+    func trulyIdempotentSkipsWrite() {
+        // 남이 켜둔 상태 위에서 engage → 이미 양쪽 다 true 라 쓸 이유가 없다.
+        let system = FakeSystem(sleepDisabled: true, desiredSleepDisabled: true)
+        let service = makeService(system: system, store: makeTemporaryStore())
+
+        _ = service.handle(.engage)
+        #expect(system.writeCalls.isEmpty, "불필요한 쓰기는 하지 않는다")
     }
 }
 
@@ -114,7 +182,7 @@ struct WatchdogTests {
         let clock = TestClock()
         let service = makeService(system: system, store: makeTemporaryStore(), clock: clock)
 
-        _ = service.handle(.engage(bootSessionUUID: "SESSION-A"))
+        _ = service.handle(.engage)
         #expect(system.sleepDisabled == true)
 
         clock.advance(HelperConstants.heartbeatTimeout + 1)
@@ -129,7 +197,7 @@ struct WatchdogTests {
         let clock = TestClock()
         let service = makeService(system: system, store: makeTemporaryStore(), clock: clock)
 
-        _ = service.handle(.engage(bootSessionUUID: "SESSION-A"))
+        _ = service.handle(.engage)
 
         // 30초마다 하트비트를 보내며 5분을 보낸다.
         for _ in 0..<10 {
@@ -150,7 +218,7 @@ struct WatchdogTests {
         let clock = TestClock()
 
         _ = makeService(system: system, store: store, clock: clock)
-            .handle(.engage(bootSessionUUID: "SESSION-A"))
+            .handle(.engage)
         #expect(system.sleepDisabled == true)
 
         // 앱은 죽었다. 헬퍼만 30초마다 재시작하며 5시간이 흐른다.
@@ -174,7 +242,7 @@ struct WatchdogTests {
         let clock = TestClock()
 
         _ = makeService(system: system, store: store, clock: clock)
-            .handle(.engage(bootSessionUUID: "SESSION-A"))
+            .handle(.engage)
 
         clock.advance(HelperConstants.maximumEngagement / 2)
         let revived = makeService(system: system, store: store, clock: clock)
@@ -208,7 +276,7 @@ struct OrphanRecoveryTests {
         // 1) 지난 세션에서 engage 한 채 헬퍼가 죽었다.
         let before = FakeSystem(sleepDisabled: false, bootSession: "SESSION-A")
         _ = makeService(system: before, store: store)
-            .handle(.engage(bootSessionUUID: "SESSION-A"))
+            .handle(.engage)
         #expect(before.sleepDisabled == true)
 
         // 2) 재부팅. SleepDisabled 는 영구 저장이라 켜진 채로 살아남는다.
@@ -225,7 +293,7 @@ struct OrphanRecoveryTests {
         let store = makeTemporaryStore()
 
         let system = FakeSystem(sleepDisabled: false, bootSession: "SESSION-A")
-        _ = makeService(system: system, store: store).handle(.engage(bootSessionUUID: "SESSION-A"))
+        _ = makeService(system: system, store: store).handle(.engage)
 
         // 헬퍼만 죽었다 살아남 — 부팅 세션은 그대로.
         let revived = makeService(system: system, store: store)
@@ -239,7 +307,7 @@ struct OrphanRecoveryTests {
     func watchdogResumesAfterRestart() {
         let store = makeTemporaryStore()
         let system = FakeSystem(sleepDisabled: false, bootSession: "SESSION-A")
-        _ = makeService(system: system, store: store).handle(.engage(bootSessionUUID: "SESSION-A"))
+        _ = makeService(system: system, store: store).handle(.engage)
 
         let clock = TestClock()
         let revived = makeService(system: system, store: store, clock: clock)

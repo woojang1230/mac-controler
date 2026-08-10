@@ -77,8 +77,8 @@ public final class HelperService: @unchecked Sendable {
         defer { lock.unlock() }
 
         switch request {
-        case .engage(let bootSessionUUID):
-            return engage(bootSessionUUID: bootSessionUUID)
+        case .engage:
+            return engage()
         case .release:
             return releaseToBaseline()
         case .heartbeat:
@@ -89,16 +89,18 @@ public final class HelperService: @unchecked Sendable {
         }
     }
 
-    private func engage(bootSessionUUID: String) -> HelperReply {
+    private func engage() -> HelperReply {
         guard baseline == nil else {
             lastHeartbeat = now()
             return .alreadyInDesiredState(statusLocked())
         }
 
         // 반드시 켜기 **전에** 현재 값을 저장한다. 순서가 뒤바뀌면 복원 근거가 사라진다.
+        // 되돌릴 대상은 디스크 희망값이다 — 그것만 영구 저장되기 때문이다.
+        let snapshot = reader.snapshot()
         let saved = Baseline(
-            sleepDisabled: reader.snapshot().sleepDisabled,
-            bootSessionUUID: bootSessionUUID,
+            sleepDisabled: snapshot.desiredSleepDisabled ?? snapshot.sleepDisabled,
+            bootSessionUUID: snapshot.bootSessionUUID ?? "unknown",
             engagedAt: now()
         )
         do {
@@ -183,6 +185,7 @@ public final class HelperService: @unchecked Sendable {
             baselineSleepDisabled: baseline?.sleepDisabled,
             engagedByUs: baseline != nil,
             engagedBootSessionUUID: baseline?.bootSessionUUID,
+            engagedAt: baseline?.engagedAt,
             secondsSinceHeartbeat: lastHeartbeat.map { now().timeIntervalSince($0) }
         )
     }

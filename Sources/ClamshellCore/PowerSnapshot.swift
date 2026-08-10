@@ -22,9 +22,19 @@ public struct PowerSnapshot: Sendable, Equatable {
 
     /// `IOPMrootDomain` 의 `SleepDisabled` — 커널에 실제로 반영된 값.
     ///
-    /// 디스크에 저장된 희망값(`IOPMCopySystemPowerSettings`)과 다를 수 있다.
+    /// 디스크에 저장된 희망값(`desiredSleepDisabled`)과 다를 수 있다.
     /// powerd 를 거쳐 비동기로 반영되기 때문이다.
     public var sleepDisabled: Bool
+
+    /// `IOPMCopySystemPowerSettings()` 의 `SleepDisabled` — **디스크에 저장된 희망값.**
+    ///
+    /// 이쪽이 영구 저장되는 값이고, powerd 가 부팅 때마다 커널에 다시 밀어넣는다.
+    /// 따라서 **되돌리기의 진짜 대상은 커널값이 아니라 이 값이다.**
+    /// 커널값만 보고 "이미 원하는 상태"라고 판단하면, 디스크에 남은 값이
+    /// 나중에 되살아나 맥이 영영 안 자게 된다.
+    ///
+    /// 키가 없으면 nil (아직 한 번도 설정된 적 없음).
+    public var desiredSleepDisabled: Bool?
 
     public var powerSource: PowerSource
 
@@ -43,6 +53,7 @@ public struct PowerSnapshot: Sendable, Equatable {
         lidClosed: Bool,
         clamshellCausesSleep: Bool,
         sleepDisabled: Bool,
+        desiredSleepDisabled: Bool?,
         powerSource: PowerSource,
         batteryPercent: Int?,
         externalDisplayCount: Int,
@@ -51,6 +62,7 @@ public struct PowerSnapshot: Sendable, Equatable {
         self.lidClosed = lidClosed
         self.clamshellCausesSleep = clamshellCausesSleep
         self.sleepDisabled = sleepDisabled
+        self.desiredSleepDisabled = desiredSleepDisabled
         self.powerSource = powerSource
         self.batteryPercent = batteryPercent
         self.externalDisplayCount = externalDisplayCount

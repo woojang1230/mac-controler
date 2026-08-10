@@ -88,15 +88,28 @@ final class AppModel {
             break
         }
 
-        guard let session = snapshot.bootSessionUUID else {
-            lastMessage = "부팅 세션을 읽지 못해 안전하게 켤 수 없습니다"
+        await send(.engage)
+        adoptEngagementIfNeeded()
+    }
+
+    /// 헬퍼가 engage 중이면 그 engagement 를 인수한다.
+    ///
+    /// engage 직후뿐 아니라 **앱 재시작 후에도** 필요하다. 헬퍼가 켜둔 채로
+    /// 앱만 다시 뜨면, 메뉴는 토글 ON 으로 보이는데 하트비트를 아무도 안 보내
+    /// 90초 뒤 워치독이 조용히 풀어버린다. `engagedAt` 이 없으면 배터리·타임아웃
+    /// 자동 해제도 함께 죽는다.
+    private func adoptEngagementIfNeeded() {
+        guard let status = helperStatus, status.engagedByUs else {
+            stopHeartbeat()
+            engagedAt = nil
             return
         }
-        await send(.engage(bootSessionUUID: session))
-        if engagedByUs {
-            engagedAt = Date()
-            startHeartbeat()
-        }
+        guard heartbeatTimer == nil else { return }  // 이미 인수함
+
+        engagedAt = status.engagedAt ?? Date()
+        Log.model.notice(
+            "진행 중인 engagement 인수 — engagedAt=\(String(describing: self.engagedAt), privacy: .public)")
+        startHeartbeat()
     }
 
     private func confirm(_ reason: String) -> Bool {
@@ -138,12 +151,16 @@ final class AppModel {
             lastMessage = "설정은 보냈으나 커널 반영을 확인하지 못했습니다"
         case .denied(let reason):
             lastMessage = reason
+            // 거부됐다면 우리가 들고 있던 상태가 더 이상 맞지 않을 수 있다.
+            // 토글이 실제와 다른 상태를 계속 표시하지 않도록 다시 물어본다.
+            Task { await self.syncHelperStatus() }
         }
         refresh()
     }
 
     func syncHelperStatus() async {
         await send(.status)
+        adoptEngagementIfNeeded()
     }
 
     // MARK: - 하트비트와 자동 해제
@@ -161,6 +178,19 @@ final class AppModel {
     private func stopHeartbeat() {
         heartbeatTimer?.invalidate()
         heartbeatTimer = nil
+    }
+
+    /// 앱 종료 직전에 engagement 를 정리한다.
+    ///
+    /// 워치독이 어차피 90초 뒤 되돌리지만, 그 90초 동안 사용자는 "앱을 껐다"고
+    /// 믿으면서 맥은 여전히 뚜껑을 닫아도 안 자는 상태다. 의도적 종료라면
+    /// 즉시 되돌리는 것이 맞다. 종료 경로라 동기로 부른다(최대 폴링 시간만큼 지연).
+    func releaseOnQuit() {
+        guard engagedByUs else { return }
+        stopHeartbeat()
+        engagedAt = nil
+        Log.model.notice("앱 종료 — engagement 해제")
+        _ = try? helper.send(.release)
     }
 
     private func beat() async {

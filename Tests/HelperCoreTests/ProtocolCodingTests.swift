@@ -18,7 +18,7 @@ struct ProtocolCodingTests {
     @Test(
         "HelperRequest 왕복",
         arguments: [
-            HelperRequest.engage(bootSessionUUID: "0F75BC79-DEB0-41CD-BF5E-250773293BD8"),
+            HelperRequest.engage,
             .release,
             .heartbeat,
             .status,
@@ -30,9 +30,8 @@ struct ProtocolCodingTests {
 
         // HelperRequest 는 Equatable 이 아니므로 케이스로 비교한다.
         switch (request, decoded) {
-        case (.engage(let a), .engage(let b)):
-            #expect(a == b, "부팅 세션 UUID 가 살아남아야 고아 감지가 동작한다")
-        case (.release, .release), (.heartbeat, .heartbeat), (.status, .status):
+        case (.engage, .engage), (.release, .release),
+             (.heartbeat, .heartbeat), (.status, .status):
             break
         default:
             Issue.record("케이스가 바뀌었다: \(request) → \(decoded)")
@@ -46,9 +45,13 @@ struct ProtocolCodingTests {
             baselineSleepDisabled: false,
             engagedByUs: true,
             engagedBootSessionUUID: "SESSION-A",
+            // 앱이 재시작 후 engagement 를 인수하려면 이 값이 살아남아야 한다.
+            engagedAt: Date(timeIntervalSince1970: 1_700_000_000),
             secondsSinceHeartbeat: 12.5
         )
-        #expect(try roundTrip(status) == status)
+        let decoded = try roundTrip(status)
+        #expect(decoded == status)
+        #expect(decoded.engagedAt == status.engagedAt, "engagedAt 이 사라지면 자동 해제가 죽는다")
 
         // baseline 이 nil 인 상태(= engage 중 아님)도 왕복돼야 한다.
         let idle = HelperStatus(

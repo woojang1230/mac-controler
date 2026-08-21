@@ -97,9 +97,13 @@ public final class HelperService: @unchecked Sendable {
 
         // 반드시 켜기 **전에** 현재 값을 저장한다. 순서가 뒤바뀌면 복원 근거가 사라진다.
         // 되돌릴 대상은 디스크 희망값이다 — 그것만 영구 저장되기 때문이다.
+        // nil 은 '키 없음' = 슬립 차단 안 함 = false 다. SleepSwitch.settled 와 **같은**
+        // 해석을 써야 한다. 커널값으로 대신 채우면, 디스크에 키가 없는데 커널만 true 인
+        // 상태에서 baseline 이 true 가 되고 → release 가 "이미 true"라며 쓰기를 건너뛰고
+        // baseline 을 지운다 → 없던 키가 true 로 영구 잔존한다.
         let snapshot = reader.snapshot()
         let saved = Baseline(
-            sleepDisabled: snapshot.desiredSleepDisabled ?? snapshot.sleepDisabled,
+            sleepDisabled: snapshot.desiredSleepDisabled ?? false,
             bootSessionUUID: snapshot.bootSessionUUID ?? "unknown",
             engagedAt: now()
         )
@@ -168,7 +172,14 @@ public final class HelperService: @unchecked Sendable {
             return
         }
 
-        guard let last = lastHeartbeat else { return }
+        // baseline 은 있는데 하트비트 기준점이 없다 = 복원이 아직 끝나지 않은 상태다.
+        // 고아 복구(`recoverOrphanIfNeeded`)가 미확인으로 끝나면 여기로 온다.
+        // 이걸 그냥 return 하면 4시간 절대 상한까지 아무도 다시 시도하지 않는다.
+        guard let last = lastHeartbeat else {
+            Self.log.notice("복원 미완료 상태 감지 — 재시도")
+            restore(reason: "복원 재시도")
+            return
+        }
         let silence = now().timeIntervalSince(last)
         guard silence > HelperConstants.heartbeatTimeout else { return }
 

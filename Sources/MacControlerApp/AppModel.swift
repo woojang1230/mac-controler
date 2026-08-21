@@ -99,7 +99,14 @@ final class AppModel {
     /// 90초 뒤 워치독이 조용히 풀어버린다. `engagedAt` 이 없으면 배터리·타임아웃
     /// 자동 해제도 함께 죽는다.
     private func adoptEngagementIfNeeded() {
-        guard let status = helperStatus, status.engagedByUs else {
+        guard let status = helperStatus else {
+            // 헬퍼 상태를 모른다 = XPC 가 일시적으로 실패했다는 뜻이지,
+            // 헬퍼가 해제됐다는 뜻이 아니다. 여기서 하트비트를 멈추면
+            // 워치독이 복원해버리고, 다음 수동 갱신까지 자가 복구도 안 된다.
+            Log.model.notice("헬퍼 상태 불명 — 하트비트는 유지하고 다음 기회에 재확인")
+            return
+        }
+        guard status.engagedByUs else {
             stopHeartbeat()
             engagedAt = nil
             return
@@ -127,17 +134,17 @@ final class AppModel {
     // MARK: - 헬퍼 통신
 
     @discardableResult
-    private func send(_ request: HelperRequest) async -> Bool {
+    private func send(_ request: HelperRequest) async -> HelperReply? {
         let helper = self.helper
         do {
             let reply = try await Task.detached { try helper.send(request) }.value
             apply(reply)
-            return true
+            return reply
         } catch {
             helperStatus = nil
             lastMessage = error.localizedDescription
             Log.model.error("헬퍼 요청 실패: \(error.localizedDescription, privacy: .public)")
-            return false
+            return nil
         }
     }
 
@@ -168,11 +175,17 @@ final class AppModel {
     /// 앱이 살아있음을 헬퍼에 알린다. 끊기면 헬퍼가 baseline 으로 되돌린다.
     private func startHeartbeat() {
         stopHeartbeat()
-        heartbeatTimer = Timer.scheduledTimer(
-            withTimeInterval: HelperConstants.heartbeatInterval, repeats: true
-        ) { [weak self] _ in
+        // ⚠️ `Timer.scheduledTimer` 는 메인 런루프의 `.default` 모드에만 붙는다.
+        // NSMenu 트래킹은 `NSEventTrackingRunLoopMode` 중첩 루프로 전환되므로,
+        // 그대로 두면 **메뉴가 열려 있는 동안 하트비트가 한 번도 안 나간다.**
+        // 메뉴를 90초 열어두면 헬퍼 워치독이 앱이 죽은 줄 알고 조용히 복원한다.
+        // `PowerStateObserver` 가 IOPS 소스를 `.commonModes` 로 넣은 것과 같은 이유다.
+        let timer = Timer(timeInterval: HelperConstants.heartbeatInterval, repeats: true) {
+            [weak self] _ in
             Task { @MainActor in await self?.beat() }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        heartbeatTimer = timer
     }
 
     private func stopHeartbeat() {
@@ -201,23 +214,34 @@ final class AppModel {
            let reason = ClamshellPolicy.autoReleaseReason(
                snapshot, engagedAt: engagedAt, now: Date(), settings: settings) {
             Log.model.notice("자동 해제: \(String(describing: reason), privacy: .public)")
-            await send(.release)
+            let reply = await send(.release)
             stopHeartbeat()
             self.engagedAt = nil
-            notifyAutoRelease(reason)
+            // 헬퍼가 복원을 확인하지 못했으면(재시도 대기 중) 완료라고 말하면 안 된다.
+            var confirmed = false
+            if case .applied = reply { confirmed = true }
+            notifyAutoRelease(reason, confirmed: confirmed)
             return
         }
         await send(.heartbeat)
     }
 
-    private func notifyAutoRelease(_ reason: ClamshellPolicy.AutoReleaseReason) {
-        let alert = NSAlert()
-        alert.messageText = "슬립 차단을 자동으로 해제했습니다"
-        alert.informativeText = switch reason {
+    private func notifyAutoRelease(_ reason: ClamshellPolicy.AutoReleaseReason, confirmed: Bool) {
+        let why = switch reason {
         case .lowBattery: "배터리가 \(settings.batteryThresholdPercent)% 아래로 떨어졌습니다."
         case .timeout: "설정한 최대 시간(\(Int(settings.maximumDuration / 3600))시간)이 지났습니다."
         }
-        alert.alertStyle = .informational
+        let alert = NSAlert()
+        if confirmed {
+            alert.messageText = "슬립 차단을 자동으로 해제했습니다"
+            alert.informativeText = why
+            alert.alertStyle = .informational
+        } else {
+            alert.messageText = "슬립 차단 해제를 요청했으나 확인되지 않았습니다"
+            alert.informativeText = why
+                + "\n\n헬퍼가 재시도 중입니다. 잠시 후에도 켜져 있으면 메뉴에서 상태를 확인하세요."
+            alert.alertStyle = .warning
+        }
         NSApp.activate()
         alert.runModal()
     }

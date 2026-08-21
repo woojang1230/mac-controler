@@ -21,6 +21,16 @@ TIMEOUT=10
 [ "$(id -u)" -eq 0 ] || { echo "error: sudo 로 실행하세요" >&2; exit 1; }
 
 kernel_value() { ioreg -r -k SleepDisabled -d 1 | awk -F'= ' '/"SleepDisabled"/{print $2; exit}'; }
+# 디스크(영구) 값. 키가 없으면 빈 문자열 — '차단 안 함' 과 같은 뜻이다.
+disk_value()   { pmset -g | awk '/SleepDisabled/{print $2; exit}'; }
+
+# 커널과 디스크가 **둘 다** 목표일 때만 복원으로 인정한다.
+# Swift 쪽에서 "커널만 보면 안 된다"로 BLOCKER 를 받은 것과 같은 기준을 셸에도 적용한다.
+settled() {  # $1 = 0|1
+	local want_text; [ "$1" -eq 1 ] && want_text="Yes" || want_text="No"
+	local disk; disk=$(disk_value); [ -z "$disk" ] && disk=0
+	[ "$(kernel_value)" = "$want_text" ] && [ "$disk" = "$1" ]
+}
 
 echo "제거 전 상태:"
 printf '  커널 SleepDisabled : %s\n' "$(kernel_value)"
@@ -55,10 +65,17 @@ if [ -f "$BASELINE" ]; then
 
 	# powerd 경유라 비동기다. 값이 실제로 따라올 때까지 기다린다.
 	deadline=$(( $(date +%s) + TIMEOUT ))
-	while [ "$(kernel_value)" != "$WANT_TEXT" ]; do
+	while ! settled "$WANT"; do
 		if [ "$(date +%s)" -ge "$deadline" ]; then
-			echo "❌ ${TIMEOUT}초 안에 복원이 확인되지 않았습니다 (현재: $(kernel_value), 기대: $WANT_TEXT)" >&2
+			echo "❌ ${TIMEOUT}초 안에 복원이 확인되지 않았습니다" >&2
+			echo "   커널=$(kernel_value) 디스크=$(disk_value) 기대=$WANT_TEXT/$WANT" >&2
 			echo "   **아무것도 지우지 않았습니다.** 복원 근거를 남겨둡니다." >&2
+			# 헬퍼를 다시 올려둔다. 여기서 내려둔 채로 두면 그 부팅 세션 동안
+			# 워치독이 죽어 있어 되돌릴 주체가 아무도 없다.
+			if [ -f "$PLIST_DST" ]; then
+				launchctl bootstrap system "$PLIST_DST" 2>/dev/null \
+					&& echo "   헬퍼를 다시 올렸습니다 (워치독 재가동)" >&2
+			fi
 			echo "   수동 복구:" >&2
 			echo "     sudo pmset disablesleep $WANT" >&2
 			echo "     ioreg -r -k SleepDisabled -d 1 | grep SleepDisabled" >&2
@@ -67,7 +84,7 @@ if [ -f "$BASELINE" ]; then
 		fi
 		sleep 0.5
 	done
-	echo "  복원 확인됨 ($(kernel_value))"
+	echo "  복원 확인됨 (커널=$(kernel_value) 디스크=$(disk_value))"
 
 	# --- 3) 확인된 뒤에만 지운다 ---
 	rm -f "$BASELINE"

@@ -19,9 +19,12 @@ final class FakeSystem: PowerStateReading, SleepDisabledWriting, @unchecked Send
     /// powerd 가 아직 적용하지 않은 구간을 흉내낸다.
     private var kernelFrozen = false
 
+    /// - Parameter diskKeyAbsent: true 면 디스크에 `SleepDisabled` 키가 아예 없는 상태.
+    ///   한 번도 설정된 적 없는 맥이 이렇다. nil 처리 경로를 테스트하려면 이게 필요하다.
     init(
         sleepDisabled: Bool,
         desiredSleepDisabled: Bool? = nil,
+        diskKeyAbsent: Bool = false,
         bootSession: String = "SESSION-A"
     ) {
         current = PowerSnapshot(
@@ -29,7 +32,7 @@ final class FakeSystem: PowerStateReading, SleepDisabledWriting, @unchecked Send
             clamshellCausesSleep: true,
             sleepDisabled: sleepDisabled,
             // 따로 주지 않으면 커널과 디스크가 일치하는 평범한 상태.
-            desiredSleepDisabled: desiredSleepDisabled ?? sleepDisabled,
+            desiredSleepDisabled: diskKeyAbsent ? nil : (desiredSleepDisabled ?? sleepDisabled),
             powerSource: .ac,
             batteryPercent: 100,
             externalDisplayCount: 0,
@@ -61,6 +64,9 @@ final class FakeSystem: PowerStateReading, SleepDisabledWriting, @unchecked Send
 
     /// 이후의 write 가 커널에 반영되지 않게 한다(디스크에만 남는다).
     func freezeKernel() { lock.withLock { kernelFrozen = true } }
+
+    /// 다시 커널까지 반영되게 한다. 복원 재시도가 성공하는 상황을 만들 때 쓴다.
+    func unfreezeKernel() { lock.withLock { kernelFrozen = false } }
 
     /// powerd 가 디스크 값을 뒤늦게 커널에 반영하는 상황.
     func powerdApplies() {

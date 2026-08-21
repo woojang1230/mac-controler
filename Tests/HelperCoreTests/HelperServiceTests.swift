@@ -162,6 +162,24 @@ struct DivergedStateTests {
                 "false 를 실제로 쓴 적이 있어야 한다")
     }
 
+    @Test("★ 디스크 키가 없던 자리에 true 를 영구히 남기지 않는다")
+    func absentDiskKeyIsNotTurnedIntoPermanentTrue() {
+        // 디스크에 SleepDisabled 키가 아예 없는데 커널만 true 인 상태.
+        // baseline 을 커널값(true)으로 잡으면, release 가 "이미 true 니 됐다"고
+        // 판단해 쓰기를 건너뛰고 baseline 을 지운다 → 없던 키가 true 로 영구 잔존한다.
+        // nil 의 의미는 SleepSwitch.settled 와 같아야 한다: '슬립 차단 안 함' = false.
+        let system = FakeSystem(sleepDisabled: true, diskKeyAbsent: true)
+        let store = makeTemporaryStore()
+        let service = makeService(system: system, store: store)
+
+        _ = service.handle(.engage)
+        _ = service.handle(.release)
+
+        #expect(system.desiredSleepDisabled != true,
+                "없던 디스크 키가 true 로 남으면 다음 부팅에 powerd 가 되살린다")
+        #expect(store.load() == nil, "복원이 끝났으면 baseline 도 정리돼야 한다")
+    }
+
     @Test("커널·디스크가 둘 다 목표와 같으면 쓰지 않는다")
     func trulyIdempotentSkipsWrite() {
         // 남이 켜둔 상태 위에서 engage → 이미 양쪽 다 true 라 쓸 이유가 없다.
@@ -317,6 +335,32 @@ struct OrphanRecoveryTests {
         revived.checkHeartbeat()
 
         #expect(system.sleepDisabled == false, "재시작해도 앱이 안 붙으면 결국 원복돼야 한다")
+    }
+
+    @Test("★ 고아 복원이 미확인으로 끝나도 워치독이 재시도한다")
+    func failedOrphanRestoreIsRetried() {
+        let store = makeTemporaryStore()
+        let system = FakeSystem(sleepDisabled: false, bootSession: "SESSION-A")
+        _ = makeService(system: system, store: store).handle(.engage)
+
+        // 재부팅 + powerd 가 아직 따라오지 못해 복원 확인이 실패하는 상황.
+        system.reboot(as: "SESSION-B")
+        system.freezeKernel()
+
+        let clock = TestClock()
+        let revived = makeService(system: system, store: store, clock: clock)
+        revived.recoverOrphanIfNeeded()
+        #expect(store.load() != nil, "확인 실패면 baseline 을 유지해 재시도 근거를 남긴다")
+
+        // powerd 가 정상화된 뒤 워치독이 다시 시도해야 한다.
+        // 고아 분기는 lastHeartbeat 을 세우지 않으므로, 그 상태를 '복원 대기'로
+        // 인식하지 못하면 4시간 절대 상한까지 아무도 손대지 않는다.
+        system.unfreezeKernel()
+        clock.advance(HelperConstants.heartbeatInterval)
+        revived.checkHeartbeat()
+
+        #expect(system.sleepDisabled == false, "재시도로 복원돼야 한다")
+        #expect(store.load() == nil, "복원 성공했으면 baseline 정리")
     }
 
     @Test("baseline 이 없으면 기동 시 아무것도 하지 않는다")

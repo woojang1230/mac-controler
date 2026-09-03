@@ -29,6 +29,10 @@ final class AppModel {
     /// 헬퍼가 보고한 마지막 상태. 헬퍼가 없으면 nil.
     private(set) var helperStatus: HelperStatus?
 
+    /// 바뀐 상한이 헬퍼에 도달하기를 기다리는 중인가.
+    /// 이 동안은 앱과 헬퍼의 값이 다른 것이 정상이므로 경고를 띄우지 않는다.
+    private(set) var isSyncingLimit = false
+
     /// 사용자에게 보여줄 마지막 실패/거부 사유.
     private(set) var lastMessage: String?
 
@@ -61,7 +65,22 @@ final class AppModel {
         PolicySettingsStore.save(settings)
         Log.model.notice("자동 해제 상한 변경: \(limit.rawValue, privacy: .public)")
         guard engagedByUs else { return }
-        Task { await self.send(.heartbeat(limit: limit)) }
+        syncLimitToHelper()
+    }
+
+    /// 지금 설정된 상한을 헬퍼로 보내고, 왕복이 끝날 때까지 표시를 눌러둔다.
+    ///
+    /// 왕복 중에는 앱 설정과 헬퍼 상태가 반드시 다르다. 그것을 괴리로 표시하면
+    /// 값을 바꿀 때마다 경고가 깜빡였다 사라진다(실측 왕복 33밀리초).
+    private func syncLimitToHelper() {
+        let limit = settings.autoRelease
+        isSyncingLimit = true
+        Task {
+            await self.send(.heartbeat(limit: limit))
+            // 왕복 도중에 사용자가 또 바꿨으면 나중 요청이 아직 진행 중이다.
+            // 여기서 내리면 그 요청의 왕복이 다시 깜빡임으로 새어 나온다.
+            if self.settings.autoRelease == limit { self.isSyncingLimit = false }
+        }
     }
 
     func start() {
@@ -130,6 +149,14 @@ final class AppModel {
             engagedAt = nil
             return
         }
+
+        // 헬퍼가 우리 설정과 다른 상한으로 돌고 있으면 즉시 맞춘다.
+        // 앱을 다시 띄워 진행 중인 engagement 를 인수한 경우가 이렇다.
+        // 다음 하트비트를 기다리면 최대 30초 동안 사용자가 고르지 않은 상한이 지켜진다.
+        if status.autoRelease != settings.autoRelease, !isSyncingLimit {
+            syncLimitToHelper()
+        }
+
         guard heartbeatTimer == nil else { return }  // 이미 인수함
 
         engagedAt = status.engagedAt ?? Date()
@@ -320,6 +347,14 @@ final class AppModel {
 
     /// 헬퍼가 실제로 들고 있는 상한. 앱 설정과 다르면 아직 전달되지 않은 것이다.
     var helperAutoRelease: AutoReleaseLimit? { helperStatus?.autoRelease }
+
+    /// "헬퍼는 아직 옛 상한으로 동작 중" 경고를 띄워야 하는가.
+    var shouldWarnLimitMismatch: Bool {
+        ClamshellPolicy.shouldWarnLimitMismatch(
+            appLimit: settings.autoRelease,
+            helperLimit: helperAutoRelease,
+            isSyncing: isSyncingLimit)
+    }
 
     /// 지금 켜져 있는 engagement 가 언제 자동 해제되는지.
     ///

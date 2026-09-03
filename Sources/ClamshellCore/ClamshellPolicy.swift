@@ -152,6 +152,25 @@ public enum ClamshellPolicy {
         return !isAwakeOnLidClose(snapshot)
     }
 
+    /// "헬퍼는 아직 옛 상한으로 동작 중" 경고를 띄워야 하는가.
+    ///
+    /// 이 경고의 목적은 **수렴하지 않는 괴리**를 알리는 것이다. 설정 창에서 값을
+    /// 바꾸면 앱 설정은 즉시 바뀌고 헬퍼 응답은 왕복 뒤에 온다(실측 33밀리초).
+    /// 그 사이를 괴리로 치면 값을 바꿀 때마다 경고가 깜빡였다 사라진다 —
+    /// 알림이 아니라 노이즈다. 그래서 **왕복이 끝난 뒤에도** 갈라져 있을 때만 띄운다.
+    ///
+    /// 헬퍼 상한을 모르는 경우(nil)도 띄우지 않는다. engage 중이 아니거나 XPC 가
+    /// 실패한 상태이고, 둘 다 "상한이 어긋났다" 와는 다른 이야기다.
+    /// XPC 실패는 `lastMessage` 가 따로 알린다.
+    public static func shouldWarnLimitMismatch(
+        appLimit: AutoReleaseLimit,
+        helperLimit: AutoReleaseLimit?,
+        isSyncing: Bool
+    ) -> Bool {
+        guard !isSyncing, let helperLimit else { return false }
+        return helperLimit != appLimit
+    }
+
     /// 메뉴바 아이템이 사용자 눈에 보이는 자리에 있는가.
     ///
     /// 노치가 있는 맥에서 메뉴바는 노치 좌/우 두 구간으로 쪼개진다

@@ -32,13 +32,15 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                // 앱이 보낸 값이 헬퍼에 아직 안 닿았으면 그대로 보여준다.
+                // 앱이 보낸 값이 헬퍼에 **끝내** 안 닿았을 때만 알린다.
                 // 설정 창이 바뀐 값을 보여주는데 실제로 지켜지는 값이 다르면
-                // 그것이 가장 위험한 상태다.
-                if let helper = model.helperAutoRelease, helper != model.settings.autoRelease {
+                // 그것이 가장 위험한 상태다. 다만 왕복 중(33밀리초)은 두 값이
+                // 다른 것이 정상이므로, 그때 띄우면 깜빡임밖에 안 된다.
+                // 판정은 `ClamshellPolicy.shouldWarnLimitMismatch` 가 한다.
+                if model.shouldWarnLimitMismatch, let helper = model.helperAutoRelease {
                     Label(
-                        "헬퍼는 아직 \(helper.displayName) 로 동작 중입니다 — 곧 반영됩니다",
-                        systemImage: "clock.arrow.circlepath"
+                        "헬퍼가 아직 \(helper.displayName) 로 동작 중입니다",
+                        systemImage: "exclamationmark.triangle"
                     )
                     .foregroundStyle(.orange)
                 }

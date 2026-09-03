@@ -89,6 +89,10 @@ helper-status:
 # 앱 화면이 뭐라고 표시하든 헬퍼가 들고 있는 이 값이 실제로 지켜지는 값이다.
 limit:
 	@echo "앱 설정  : $$(defaults read $(BUNDLE_ID) autoReleaseLimit 2>/dev/null || echo '(미저장 — 기본 14400)')"
-	@sudo cat "/Library/Application Support/dev.maccontroler/baseline.json" 2>/dev/null \
-		| sed 's/^/헬퍼 baseline: /' \
-		|| echo "헬퍼 baseline: (engage 중 아님)"
+	@if sudo test -f "/Library/Application Support/dev.maccontroler/baseline.json"; then \
+		sudo cat "/Library/Application Support/dev.maccontroler/baseline.json" \
+			| sed 's/^/헬퍼 baseline: /'; \
+		echo ""; \
+	else \
+		echo "헬퍼 baseline: (engage 중 아님)"; \
+	fi

@@ -26,9 +26,11 @@ public struct PolicySettings: Sendable, Equatable {
 extension AutoReleaseLimit {
     /// 설정 창과 메뉴에 그대로 나가는 이름.
     public var displayName: String {
-        guard case .after(let seconds) = self else { return "꺼짐" }
+        guard case .after = self else { return "꺼짐" }
 
-        let total = Int(seconds.rounded())
+        // `rawValue` 가 이미 유한 범위로 접은 값이다. 여기서 `Int(Double)` 을
+        // 다시 하면 접기 전 값에 닿아 트랩할 수 있다. 접는 곳은 한 군데뿐이어야 한다.
+        let total = Int(rawValue) ?? 0
         let hours = total / 3600
         let minutes = (total % 3600) / 60
         let rest = total % 60
@@ -39,6 +41,26 @@ extension AutoReleaseLimit {
         // 초는 프리셋에 없지만, 값이 어디서 오든 빈 문자열이 되면 안 된다.
         if rest > 0 || parts.isEmpty { parts.append("\(rest)초") }
         return parts.joined(separator: " ")
+    }
+
+    /// 설정 창 Picker 가 보여줄 선택지.
+    ///
+    /// 프리셋 밖의 값이 저장돼 있을 수 있다 — `defaults write` 로 넣거나
+    /// 프리셋 목록이 나중에 바뀌면 그렇다. 그 값을 목록에 넣지 않으면
+    /// Picker 가 어느 태그와도 안 맞아 **빈칸**이 되고, 사용자는 현재 설정이
+    /// 무엇인지 화면에서 알 수 없게 된다.
+    public static func choices(including current: AutoReleaseLimit) -> [AutoReleaseLimit] {
+        guard !presets.contains(current) else { return presets }
+        guard case .after(let seconds) = current else { return presets }
+
+        // 짧은 것부터 정렬된 자리에 끼워 넣는다. `never` 는 항상 마지막이다.
+        let index = presets.firstIndex { preset in
+            guard case .after(let other) = preset else { return true }
+            return other > seconds
+        } ?? presets.count
+        var all = presets
+        all.insert(current, at: index)
+        return all
     }
 }
 

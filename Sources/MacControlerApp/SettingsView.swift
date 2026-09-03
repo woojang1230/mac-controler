@@ -21,7 +21,12 @@ struct SettingsView: View {
         Form {
             Section {
                 Picker("시간 제한", selection: limit) {
-                    ForEach(AutoReleaseLimit.presets, id: \.self) { preset in
+                    // 프리셋이 아니라 `choices` 를 쓴다 — 저장된 값이 프리셋 밖이면
+                    // Picker 가 빈칸이 되어 현재 설정을 화면에서 알 수 없다.
+                    ForEach(
+                        AutoReleaseLimit.choices(including: model.settings.autoRelease),
+                        id: \.self
+                    ) { preset in
                         Text(preset.displayName).tag(preset)
                     }
                 }

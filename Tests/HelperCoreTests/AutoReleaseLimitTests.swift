@@ -74,6 +74,29 @@ struct AutoReleaseLimitTests {
         }
     }
 
+    /// 파싱은 방어의 한 겹일 뿐이다. `case after(seconds:)` 가 public 이라
+    /// 파싱을 우회한 생성이 언제든 가능하고, 그 값이 `Int(_:)` 에 닿으면
+    /// root 데몬이 트랩으로 죽는다 — do/catch 로 못 잡는 프로세스 종료다.
+    @Test(
+        "★ 파싱을 우회해 만든 값도 rawValue 에서 트랩하지 않는다",
+        arguments: [
+            TimeInterval.infinity, -TimeInterval.infinity, TimeInterval.nan,
+            TimeInterval(Int.max), -1, 0, 1e300, 31_536_001,
+        ]
+    )
+    func bypassedConstructionIsBounded(_ seconds: TimeInterval) throws {
+        let limit = AutoReleaseLimit.after(seconds: seconds)
+
+        // 아래 셋 전부 트랩 없이 돌아야 한다.
+        let raw = limit.rawValue
+        _ = try JSONEncoder().encode(limit)
+
+        // 접힌 값은 반드시 다시 파싱 가능한 범위 안이다.
+        let reparsed = AutoReleaseLimit(rawValue: raw)
+        #expect(reparsed != nil, "'\(raw)' 를 스스로 다시 못 읽으면 안 된다")
+        #expect(reparsed != .never, "접기가 무제한으로 새면 안 된다")
+    }
+
     @Test("경계값: 1초와 1년은 받고 그 밖은 거부한다")
     func boundaries() {
         #expect(AutoReleaseLimit(rawValue: "1") == .after(seconds: 1))

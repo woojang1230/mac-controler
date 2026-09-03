@@ -70,8 +70,23 @@ extension AutoReleaseLimit: RawRepresentable {
     public var rawValue: String {
         switch self {
         case .never: "never"
-        case .after(let seconds): String(Int(seconds.rounded()))
+        case .after(let seconds): String(Self.boundedSeconds(seconds))
         }
+    }
+
+    /// 어떤 값이 들어와도 `Int` 로 안전하게 접는다.
+    ///
+    /// 파싱(`init?(rawValue:)`)이 막는 것만으로는 부족하다 —
+    /// `case after(seconds:)` 가 public 이라 `.after(seconds: .infinity)` 같은
+    /// 생성이 문법적으로 가능하고, 그 값이 `Int(_:)` 에 닿으면 root 데몬이
+    /// **트랩으로 죽는다**(do/catch 로 못 잡는 프로세스 종료다).
+    ///
+    /// Double 공간에서 먼저 접은 뒤에 `Int` 로 내린다. 순서가 반대면
+    /// 접기 전에 `Int(_:)` 가 먼저 터진다.
+    static func boundedSeconds(_ seconds: TimeInterval) -> Int {
+        guard seconds.isFinite else { return maximumSeconds }
+        let clamped = Swift.min(Swift.max(seconds.rounded(), 1), Double(maximumSeconds))
+        return Int(clamped)
     }
 
     public init?(rawValue: String) {
@@ -92,8 +107,9 @@ extension AutoReleaseLimit: RawRepresentable {
         // `recoverOrphanIfNeeded` 가 `lastHeartbeat` 를 리셋해
         // **하트비트 워치독과 시간 상한이 동시에 무력화된다**(DESIGN.md §7-2 (3)).
         //
-        // 여기 한 곳만 막으면 `rawValue`·`displayName`·`encode` 의
-        // 모든 `Int(Double)` 변환이 동시에 안전해진다.
+        // 파싱은 방어의 한 겹일 뿐이다. `case after(seconds:)` 가 public 이라
+        // 파싱을 우회한 생성이 언제든 가능하므로 `rawValue` 에서도 접는다
+        // (`boundedSeconds`). `displayName`·`encode` 는 그 값을 쓴다.
         guard let seconds = Int(rawValue), seconds > 0, seconds <= Self.maximumSeconds
         else { return nil }
         self = .after(seconds: TimeInterval(seconds))
@@ -133,8 +149,13 @@ public enum HelperRequest: Codable, Sendable {
     ///
     /// 상한만은 예외다 — 헬퍼가 스스로 알아낼 방법이 없는 **사용자의 선택**이고,
     /// 앱이 죽은 뒤에도 지켜져야 하므로 헬퍼가 들고 있어야 한다.
-    /// 이것으로 늘어나는 권한은 없다: 상한을 길게 부르는 것은 하트비트를 계속
-    /// 보내는 것과 같은 효과이고, 그건 원래 막을 수 없다.
+    /// 이것으로 늘어나는 권한은 크지 않지만 0 도 아니다. 상한을 길게 부르는 것은
+    /// 대체로 하트비트를 계속 보내는 것과 같은 효과다 — 그건 원래 막을 수 없다.
+    /// **다만 `never` 는 디스크 baseline 에 남아 헬퍼 재시작을 넘긴다**는 점에서
+    /// 하트비트 반복과 완전히 등가는 아니다. 악성 피어에 대해 헬퍼 쪽에 실제로
+    /// 남는 방어는 (a) 재부팅 후 고아 복구, (b) 피어가 하트비트를 멈춘 뒤
+    /// 90초 워치독 — 이 둘이다. 배터리 임계와 시간 상한은 앱이 판단하므로
+    /// 앱을 거치지 않는 피어에게는 적용되지 않는다.
     case engage(limit: AutoReleaseLimit)
 
     /// baseline 값으로 되돌린다. 무조건 false 로 덮지 않는다.

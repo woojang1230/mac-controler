@@ -29,9 +29,12 @@ final class AppModel {
     /// 헬퍼가 보고한 마지막 상태. 헬퍼가 없으면 nil.
     private(set) var helperStatus: HelperStatus?
 
+    /// 상한 동기화 요청의 진행 상태. 판정 규칙은 `LimitSyncTracker` 가 갖는다.
+    private var limitSync = LimitSyncTracker()
+
     /// 바뀐 상한이 헬퍼에 도달하기를 기다리는 중인가.
     /// 이 동안은 앱과 헬퍼의 값이 다른 것이 정상이므로 경고를 띄우지 않는다.
-    private(set) var isSyncingLimit = false
+    var isSyncingLimit: Bool { limitSync.isSyncing }
 
     /// 사용자에게 보여줄 마지막 실패/거부 사유.
     private(set) var lastMessage: String?
@@ -71,15 +74,20 @@ final class AppModel {
     /// 지금 설정된 상한을 헬퍼로 보내고, 왕복이 끝날 때까지 표시를 눌러둔다.
     ///
     /// 왕복 중에는 앱 설정과 헬퍼 상태가 반드시 다르다. 그것을 괴리로 표시하면
-    /// 값을 바꿀 때마다 경고가 깜빡였다 사라진다(실측 왕복 33밀리초).
+    /// 값을 바꿀 때마다 경고가 깜빡였다 사라진다(실측 왕복 33밀리초, 다만
+    /// 헬퍼가 커널 확인을 폴링하면 최대 2초까지 늘어난다).
+    ///
+    /// **표시를 내리는 판정은 값이 아니라 세대로 한다** (`LimitSyncTracker`).
+    /// 값으로 비교하면 왕복 중 XPC 가 실패해(`helperStatus = nil` →
+    /// `engagedByUs == false`) 새 요청이 뜨지 못한 사이 사용자가 값을 바꾼 경우,
+    /// 진행 중이던 요청이 "내 값이 아니네" 하고 표시를 안 내려 **고착된다.**
     private func syncLimitToHelper() {
         let limit = settings.autoRelease
-        isSyncingLimit = true
+        let generation = limitSync.begin()
         Task {
+            // 어떤 경로로 빠져나가든 진행 표시는 반드시 정리한다.
+            defer { self.limitSync.finish(generation) }
             await self.send(.heartbeat(limit: limit))
-            // 왕복 도중에 사용자가 또 바꿨으면 나중 요청이 아직 진행 중이다.
-            // 여기서 내리면 그 요청의 왕복이 다시 깜빡임으로 새어 나온다.
-            if self.settings.autoRelease == limit { self.isSyncingLimit = false }
         }
     }
 
@@ -161,7 +169,15 @@ final class AppModel {
         // 헬퍼가 우리 설정과 다른 상한으로 돌고 있으면 즉시 맞춘다.
         // 앱을 다시 띄워 진행 중인 engagement 를 인수한 경우가 이렇다.
         // 다음 하트비트를 기다리면 최대 30초 동안 사용자가 고르지 않은 상한이 지켜진다.
-        if status.autoRelease != settings.autoRelease, !isSyncingLimit {
+        //
+        // 버전이 안 맞으면 시도하지 않는다. 옛(v1) 헬퍼는 `status.autoRelease` 가
+        // 항상 nil 이라 여기가 반드시 발동하는데, 그 하트비트를 옛 헬퍼가
+        // 디코드하지 못해 실패하고 `helperStatus = nil` 이 된다. 그러면 방금
+        // 정확히 진단한 "헬퍼가 오래되었습니다(버전 1, 필요 2)" 가
+        // "헬퍼가 설치되지 않았습니다" 로 덮여 사용자가 원인을 잘못 안다.
+        if helperVersionMismatch == nil,
+           status.autoRelease != settings.autoRelease,
+           !isSyncingLimit {
             syncLimitToHelper()
         }
 

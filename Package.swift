@@ -15,8 +15,16 @@ let package = Package(
         // root 권한이 필요 없는 순수 로직과 시스템 상태 읽기.
         // Phase 2 에서 root 헬퍼도 이 모듈을 쓰므로 defaultIsolation 을 걸지 않는다 —
         // MainActor 를 강제하면 헬퍼(비 UI 프로세스)에서 쓸 수 없다.
+        //
+        // HelperProtocol 에 의존하는 것은 `AutoReleaseLimit` 하나 때문이다.
+        // 자동 해제 상한은 앱이 정하고 헬퍼가 지키는 값이라 양쪽이 **같은 타입**을
+        // 봐야 한다. 정책(여기)과 계약(HelperProtocol)에 따로 정의해 두면
+        // 두 해석이 갈라질 자리가 생긴다. 방향은 이쪽뿐이다 —
+        // HelperProtocol 은 의존성 0 을 유지해야 하고(root 프로세스의 공격 표면),
+        // ClamshellCore 는 IOKit·CoreGraphics 를 끌고 온다.
         .target(
             name: "ClamshellCore",
+            dependencies: ["HelperProtocol"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
 
@@ -54,7 +62,7 @@ let package = Package(
 
         .testTarget(
             name: "ClamshellCoreTests",
-            dependencies: ["ClamshellCore"],
+            dependencies: ["ClamshellCore", "HelperProtocol"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
 

@@ -63,7 +63,17 @@ struct StatusMenuView: View {
             Text("   \(message)")
         }
 
+        // 켜져 있을 때는 언제 풀리는지가 토글 다음으로 궁금한 정보다.
+        if model.engagedByUs {
+            Text("   \(model.scheduledReleaseDescription)")
+        }
+
         Divider()
+
+        SettingsLink {
+            Text("설정…")
+        }
+        .keyboardShortcut(",")
 
         Button("지금 새로고침") { model.refresh() }
             .keyboardShortcut("r")

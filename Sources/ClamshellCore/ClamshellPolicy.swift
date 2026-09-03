@@ -1,17 +1,44 @@
 import CoreGraphics
 import Foundation
+import HelperProtocol
 
 /// 사용자가 바꿀 수 있는 안전 임계값.
 ///
 /// 기본값은 확정된 제품 결정에서 나왔다 — 배터리에서 "경고 후 허용",
 /// 15% 자동 해제, 4시간 절대 타임아웃. DESIGN.md §0 참조.
+///
+/// 시간 상한은 설정 창에서 바꿀 수 있고 '꺼짐' 도 고를 수 있다.
+/// 배터리 임계는 아직 고정이다 — 방전은 되돌릴 수 없는 손실이라
+/// 시간 상한과 같은 급으로 다루지 않는다.
 public struct PolicySettings: Sendable, Equatable {
     public var batteryThresholdPercent: Int
-    public var maximumDuration: TimeInterval
+    public var autoRelease: AutoReleaseLimit
 
-    public init(batteryThresholdPercent: Int = 15, maximumDuration: TimeInterval = 4 * 3600) {
+    public init(
+        batteryThresholdPercent: Int = 15,
+        autoRelease: AutoReleaseLimit = .default
+    ) {
         self.batteryThresholdPercent = batteryThresholdPercent
-        self.maximumDuration = maximumDuration
+        self.autoRelease = autoRelease
+    }
+}
+
+extension AutoReleaseLimit {
+    /// 설정 창과 메뉴에 그대로 나가는 이름.
+    public var displayName: String {
+        guard case .after(let seconds) = self else { return "꺼짐" }
+
+        let total = Int(seconds.rounded())
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let rest = total % 60
+
+        var parts: [String] = []
+        if hours > 0 { parts.append("\(hours)시간") }
+        if minutes > 0 { parts.append("\(minutes)분") }
+        // 초는 프리셋에 없지만, 값이 어디서 오든 빈 문자열이 되면 안 된다.
+        if rest > 0 || parts.isEmpty { parts.append("\(rest)초") }
+        return parts.joined(separator: " ")
     }
 }
 
@@ -95,7 +122,11 @@ public enum ClamshellPolicy {
            percent < settings.batteryThresholdPercent {
             return .lowBattery
         }
-        if now.timeIntervalSince(engagedAt) > settings.maximumDuration {
+        // '꺼짐' 이면 시간으로는 풀지 않는다. 배터리 규칙은 위에서 이미 걸렀다 —
+        // 순서가 중요하다. 시간 검사를 먼저 두고 early return 하면 '꺼짐' 이
+        // 배터리 규칙까지 건너뛰게 만들기 쉽다.
+        if case .after(let seconds) = settings.autoRelease,
+           now.timeIntervalSince(engagedAt) > seconds {
             return .timeout
         }
         return nil

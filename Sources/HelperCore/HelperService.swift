@@ -77,21 +77,49 @@ public final class HelperService: @unchecked Sendable {
         defer { lock.unlock() }
 
         switch request {
-        case .engage:
-            return engage()
+        case .engage(let limit):
+            return engage(limit: limit)
         case .release:
             return releaseToBaseline()
-        case .heartbeat:
+        case .heartbeat(let limit):
             lastHeartbeat = now()
+            adoptLimit(limit)
             return .status(statusLocked())
         case .status:
             return .status(statusLocked())
         }
     }
 
-    private func engage() -> HelperReply {
+    /// 앱이 알려준 상한을 진행 중인 engagement 에 반영한다. lock 을 쥔 채 부른다.
+    ///
+    /// 설정 창에서 값을 바꾸면 다음 하트비트가 이걸 실어 온다. 이 경로가 없으면
+    /// 사용자가 '꺼짐' 으로 바꿔도 헬퍼는 engage 당시의 값을 들고 있다가
+    /// 조용히 풀어버린다 — 설정이 거짓말이 되는 가장 흔한 형태다.
+    ///
+    /// engage 중이 아니면 아무것도 하지 않는다. 하트비트가 baseline 을
+    /// 만들어내면 우리가 켠 적 없는 상태를 우리 것으로 착각하게 된다.
+    private func adoptLimit(_ limit: AutoReleaseLimit) {
+        guard var saved = baseline, saved.autoRelease != limit else { return }
+
+        let previous = saved.autoRelease
+        saved.autoRelease = limit
+        do {
+            // 디스크가 먼저다. 쓰기에 실패하면 메모리도 바꾸지 않는다 —
+            // 둘이 갈라지면 헬퍼 재시작에서 어느 쪽이 진실인지 알 수 없다.
+            try store.save(saved)
+            baseline = saved
+            Self.log.notice(
+                "상한 변경: \(previous.rawValue, privacy: .public) → \(limit.rawValue, privacy: .public)")
+        } catch {
+            Self.log.error(
+                "상한 변경 저장 실패 — 옛 값 유지: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func engage(limit: AutoReleaseLimit) -> HelperReply {
         guard baseline == nil else {
             lastHeartbeat = now()
+            adoptLimit(limit)
             return .alreadyInDesiredState(statusLocked())
         }
 
@@ -105,7 +133,8 @@ public final class HelperService: @unchecked Sendable {
         let saved = Baseline(
             sleepDisabled: snapshot.desiredSleepDisabled ?? false,
             bootSessionUUID: snapshot.bootSessionUUID ?? "unknown",
-            engagedAt: now()
+            engagedAt: now(),
+            autoRelease: limit
         )
         do {
             try store.save(saved)
@@ -161,15 +190,20 @@ public final class HelperService: @unchecked Sendable {
 
         guard let saved = baseline else { return }
 
-        // 절대 상한이 먼저다. engagedAt 은 디스크에 있으므로 헬퍼가 몇 번을
-        // 재시작해도 살아남는다 — 하트비트 시계만 믿으면 반복 크래시 시
+        // 절대 상한이 먼저다. engagedAt 과 상한 둘 다 디스크에 있으므로 헬퍼가
+        // 몇 번을 재시작해도 살아남는다 — 하트비트 시계만 믿으면 반복 크래시 시
         // 매 재시작마다 리셋되어 워치독이 영영 발동하지 않는다.
-        let engaged = now().timeIntervalSince(saved.engagedAt)
-        if engaged > HelperConstants.maximumEngagement {
-            Self.log.error(
-                "engage 후 \(String(format: "%.0f", engaged), privacy: .public)초 경과 — 절대 상한 초과, 복원")
-            restore(reason: "절대 상한 초과")
-            return
+        //
+        // 사용자가 '꺼짐' 을 골랐으면 이 검사를 건너뛴다. 아래 하트비트 워치독은
+        // 건너뛰지 않는다 — 그쪽은 앱이 죽은 경우의 최후 방어선이고 설정 대상이 아니다.
+        if case .after(let cap) = saved.autoRelease {
+            let engaged = now().timeIntervalSince(saved.engagedAt)
+            if engaged > cap {
+                Self.log.error(
+                    "engage 후 \(String(format: "%.0f", engaged), privacy: .public)초 경과 — 상한 \(saved.autoRelease.rawValue, privacy: .public) 초과, 복원")
+                restore(reason: "시간 상한 초과")
+                return
+            }
         }
 
         // baseline 은 있는데 하트비트 기준점이 없다 = 복원이 아직 끝나지 않은 상태다.
@@ -197,7 +231,8 @@ public final class HelperService: @unchecked Sendable {
             engagedByUs: baseline != nil,
             engagedBootSessionUUID: baseline?.bootSessionUUID,
             engagedAt: baseline?.engagedAt,
-            secondsSinceHeartbeat: lastHeartbeat.map { now().timeIntervalSince($0) }
+            secondsSinceHeartbeat: lastHeartbeat.map { now().timeIntervalSince($0) },
+            autoRelease: baseline?.autoRelease
         )
     }
 }

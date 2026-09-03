@@ -1,0 +1,85 @@
+import AppKit
+import ClamshellCore
+import HelperProtocol
+import SwiftUI
+
+/// 옵션 창. `Settings` Scene 에 담기므로 ⌘, 로도 열린다.
+///
+/// 여기서 바꿀 수 있는 것은 **시간 제한 하나뿐**이다. 나머지 안전장치
+/// (하트비트 워치독·부팅 세션 고아 복구·배터리 임계)는 끄지 못한다 —
+/// 그것들이 없으면 앱이 죽거나 배터리가 바닥나도 맥이 계속 깨어 있게 되고,
+/// 사용자가 되돌릴 방법이 남지 않는다. 그래서 무엇이 꺼지고 무엇이 안 꺼지는지를
+/// 창 안에 그대로 적는다. 조용한 안전장치는 없느니만 못하다.
+struct SettingsView: View {
+    let model: AppModel
+
+    private var limit: Binding<AutoReleaseLimit> {
+        Binding(get: { model.settings.autoRelease }, set: { model.setAutoRelease($0) })
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("시간 제한", selection: limit) {
+                    ForEach(AutoReleaseLimit.presets, id: \.self) { preset in
+                        Text(preset.displayName).tag(preset)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                LabeledContent("현재 상태") {
+                    Text(model.scheduledReleaseDescription)
+                        .foregroundStyle(.secondary)
+                }
+
+                // 앱이 보낸 값이 헬퍼에 아직 안 닿았으면 그대로 보여준다.
+                // 설정 창이 바뀐 값을 보여주는데 실제로 지켜지는 값이 다르면
+                // 그것이 가장 위험한 상태다.
+                if let helper = model.helperAutoRelease, helper != model.settings.autoRelease {
+                    Label(
+                        "헬퍼는 아직 \(helper.displayName) 로 동작 중입니다 — 곧 반영됩니다",
+                        systemImage: "clock.arrow.circlepath"
+                    )
+                    .foregroundStyle(.orange)
+                }
+            } header: {
+                Text("자동 해제")
+            } footer: {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("정해진 시간이 지나면 슬립 차단을 원래 값으로 되돌립니다.")
+                    Text("‘꺼짐’ 을 고르면 시간으로는 해제하지 않습니다. 직접 끌 때까지 유지됩니다.")
+                }
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .padding(.top, 4)
+            }
+
+            Section {
+                ForEach(Self.alwaysOnGuards, id: \.self) { line in
+                    Label(line, systemImage: "checkmark.shield")
+                        .labelStyle(.titleAndIcon)
+                }
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            } header: {
+                Text("끄지 못하는 안전장치")
+            } footer: {
+                Text("시간 제한을 ‘꺼짐’ 으로 두어도 위 셋은 그대로 동작합니다.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 460)
+        .fixedSize(horizontal: false, vertical: true)
+        // LSUIElement(.accessory) 앱의 창은 열려도 앞으로 안 나오는 경우가 있다.
+        .onAppear { NSApp.activate() }
+    }
+
+    private static let alwaysOnGuards = [
+        "배터리 15% 미만이면 시간 제한과 무관하게 해제합니다",
+        "앱이 예기치 않게 종료되면 90초 안에 헬퍼가 되돌립니다",
+        "재부팅 후 남은 흔적은 헬퍼가 기동 즉시 되돌립니다",
+    ]
+}

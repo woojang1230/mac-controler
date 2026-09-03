@@ -14,7 +14,9 @@ public enum HelperConstants {
     public static let machServiceName = "dev.maccontroler.helper"
 
     /// 앱과 헬퍼의 계약 버전. 헬퍼만 갱신하고 앱은 옛 버전인 상황을 잡아낸다.
-    public static let protocolVersion = 1
+    ///
+    /// 2 — `engage`/`heartbeat` 가 자동 해제 상한을 함께 싣는다.
+    public static let protocolVersion = 2
 
     /// 이 시간 동안 하트비트가 없으면 헬퍼가 baseline 으로 강제 복원한다.
     ///
@@ -26,15 +28,81 @@ public enum HelperConstants {
     /// 앱이 하트비트를 보내는 주기.
     public static let heartbeatInterval: TimeInterval = 30
 
-    /// engage 후 이 시간이 지나면 하트비트와 무관하게 무조건 복원한다.
+}
+
+/// engage 를 시간으로 자동 해제하는 상한. 사용자가 설정 창에서 고른다.
+///
+/// **왜 `TimeInterval?` 이 아닌가.** 이 프로젝트는 nil 의미 불일치로 이미 두 번
+/// 물렸다(디스크의 `SleepDisabled` 키 없음 vs 거짓, DESIGN.md §8). '상한 없음' 은
+/// 값을 못 읽은 것이 아니라 **사용자가 명시적으로 고른 선택지**다. 둘을 같은
+/// 표현으로 뭉뚱그리면 "읽기 실패 → 무제한" 이라는 최악의 오작동이 열린다.
+///
+/// **이 상한은 시간 제한만 끈다.** 하트비트 워치독(앱이 죽으면 복원)과 부팅 세션
+/// 고아 복구는 `never` 에서도 그대로 산다. 그쪽은 사용자 설정 대상이 아니다 —
+/// 끄면 앱 크래시 한 번으로 맥이 영영 안 자는 상태가 된다.
+public enum AutoReleaseLimit: Sendable, Equatable, Hashable {
+    /// 이만큼 지나면 하트비트와 무관하게 복원한다.
+    case after(seconds: TimeInterval)
+
+    /// 시간으로는 해제하지 않는다.
+    case never
+
+    /// 확정된 제품 결정의 기본값(DESIGN.md §0).
+    public static let `default`: AutoReleaseLimit = .after(seconds: 4 * 3600)
+
+    /// 설정 창이 제시하는 선택지. 짧은 것부터, `never` 가 마지막이다.
+    public static let presets: [AutoReleaseLimit] = [
+        .after(seconds: 30 * 60),
+        .after(seconds: 60 * 60),
+        .after(seconds: 2 * 3600),
+        .after(seconds: 4 * 3600),
+        .after(seconds: 8 * 3600),
+        .never,
+    ]
+}
+
+extension AutoReleaseLimit: RawRepresentable {
+    /// `"never"` 또는 초 단위 양의 정수 문자열.
     ///
-    /// 하트비트만으로는 부족하다 — 헬퍼가 반복 크래시하면 재시작할 때마다
-    /// 하트비트 시계가 리셋되어 워치독이 영영 발동하지 않는다(실측으로 확인).
-    /// `engagedAt` 은 디스크의 baseline 에 있으므로 재시작을 넘어 살아남는다.
-    ///
-    /// 앱 쪽 절대 타임아웃과 같은 값이지만 역할이 다르다 — 이쪽은 앱이 죽은
-    /// 뒤에도 동작하는 최후 방어선이다.
-    public static let maximumEngagement: TimeInterval = 4 * 3600
+    /// XPC 페이로드·디스크 baseline·UserDefaults 가 **전부 이 하나를 쓴다.**
+    /// 표현이 하나뿐이면 세 곳의 해석이 갈라질 여지가 없고, `defaults read` 나
+    /// 로그에서 눈으로 바로 읽힌다.
+    public var rawValue: String {
+        switch self {
+        case .never: "never"
+        case .after(let seconds): String(Int(seconds.rounded()))
+        }
+    }
+
+    public init?(rawValue: String) {
+        if rawValue == "never" {
+            self = .never
+            return
+        }
+        // 헬퍼는 서명 검증이 불가능한 피어에게서 이 값을 받는다(DESIGN.md §3).
+        // 음수·0·NaN·소수점을 여기서 잘라내야 `checkHeartbeat` 이 그것을 들고
+        // 비교하는 일이 없다. `Int` 파싱은 "1.5"·"nan"·"inf" 를 전부 거른다.
+        guard let seconds = Int(rawValue), seconds > 0 else { return nil }
+        self = .after(seconds: TimeInterval(seconds))
+    }
+}
+
+extension AutoReleaseLimit: Codable {
+    public init(from decoder: any Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        guard let value = Self(rawValue: raw) else {
+            throw DecodingError.dataCorrupted(
+                .init(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "자동 해제 상한으로 해석할 수 없는 값: '\(raw)'"))
+        }
+        self = value
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 }
 
 /// 앱 → 헬퍼. 엔드포인트는 의도적으로 넷뿐이다.
@@ -45,13 +113,22 @@ public enum HelperRequest: Codable, Sendable {
     /// 읽을 수 있는 값을 클라이언트에게 받으면 노출 면적만 늘어난다.
     /// 피어 인증이 원리적으로 불가능한 전제(DESIGN.md §3)에서는 받을 수 있는
     /// 입력을 하나라도 줄이는 편이 낫다.
-    case engage
+    ///
+    /// 상한만은 예외다 — 헬퍼가 스스로 알아낼 방법이 없는 **사용자의 선택**이고,
+    /// 앱이 죽은 뒤에도 지켜져야 하므로 헬퍼가 들고 있어야 한다.
+    /// 이것으로 늘어나는 권한은 없다: 상한을 길게 부르는 것은 하트비트를 계속
+    /// 보내는 것과 같은 효과이고, 그건 원래 막을 수 없다.
+    case engage(limit: AutoReleaseLimit)
 
     /// baseline 값으로 되돌린다. 무조건 false 로 덮지 않는다.
     case release
 
-    /// 앱이 살아있음을 알린다. 끊기면 워치독이 복원한다.
-    case heartbeat
+    /// 앱이 살아있음을 알리고, 지금 설정된 상한을 함께 알린다.
+    ///
+    /// 끊기면 워치독이 복원한다. 상한을 매번 싣는 이유는 설정 창에서 값을 바꿨을 때
+    /// **이미 켜져 있는** engagement 에도 반영되게 하기 위해서다. 안 그러면
+    /// '꺼짐' 으로 바꿔도 헬퍼는 옛 4시간을 들고 있다가 조용히 풀어버린다.
+    case heartbeat(limit: AutoReleaseLimit)
 
     /// 헬퍼가 보는 현재 상태. 진단용.
     case status
@@ -104,6 +181,12 @@ public struct HelperStatus: Codable, Sendable, Equatable {
     /// 마지막 하트비트로부터 경과 시간(초). engage 중이 아니면 nil.
     public var secondsSinceHeartbeat: TimeInterval?
 
+    /// 헬퍼가 실제로 들고 있는 자동 해제 상한. engage 중이 아니면 nil.
+    ///
+    /// 앱이 보낸 값이 헬퍼에 도달했는지를 이걸로 확인한다 — 설정 창에서 바꾼 값이
+    /// 반영됐는지 사용자가 눈으로 볼 수 있어야 한다.
+    public var autoRelease: AutoReleaseLimit?
+
     public var protocolVersion: Int
 
     public init(
@@ -113,6 +196,7 @@ public struct HelperStatus: Codable, Sendable, Equatable {
         engagedBootSessionUUID: String?,
         engagedAt: Date? = nil,
         secondsSinceHeartbeat: TimeInterval?,
+        autoRelease: AutoReleaseLimit? = nil,
         protocolVersion: Int = HelperConstants.protocolVersion
     ) {
         self.effectiveSleepDisabled = effectiveSleepDisabled
@@ -121,6 +205,7 @@ public struct HelperStatus: Codable, Sendable, Equatable {
         self.engagedBootSessionUUID = engagedBootSessionUUID
         self.engagedAt = engagedAt
         self.secondsSinceHeartbeat = secondsSinceHeartbeat
+        self.autoRelease = autoRelease
         self.protocolVersion = protocolVersion
     }
 }

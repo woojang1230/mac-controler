@@ -101,14 +101,56 @@ struct AutoReleaseTests {
         #expect(reason == .lowBattery)
     }
 
-    @Test("절대 타임아웃을 넘기면 자동 해제한다")
-    func releasesOnTimeout() {
+    @Test("설정한 시간 상한을 넘기면 자동 해제한다")
+    func releasesOnTimeout() throws {
+        guard case .after(let seconds) = settings.autoRelease else {
+            Issue.record("기본 설정에는 시간 상한이 있어야 한다")
+            return
+        }
         let snapshot = PowerSnapshot.fake(powerSource: .ac, batteryPercent: 100)
         let reason = ClamshellPolicy.autoReleaseReason(
             snapshot, engagedAt: engagedAt,
-            now: engagedAt.addingTimeInterval(settings.maximumDuration + 1),
+            now: engagedAt.addingTimeInterval(seconds + 1),
             settings: settings)
         #expect(reason == .timeout)
+    }
+
+    /// 사용자가 설정 창에서 '꺼짐' 을 고른 경우.
+    @Test("★ 시간 상한이 '꺼짐' 이면 시간으로는 해제하지 않는다")
+    func neverLimitNeverTimesOut() {
+        let settings = PolicySettings(autoRelease: .never)
+        let snapshot = PowerSnapshot.fake(powerSource: .ac, batteryPercent: 100)
+        let reason = ClamshellPolicy.autoReleaseReason(
+            snapshot, engagedAt: engagedAt,
+            now: engagedAt.addingTimeInterval(365 * 24 * 3600),
+            settings: settings)
+        #expect(reason == nil)
+    }
+
+    /// '꺼짐' 은 **시간 상한만** 끄는 것이다. 배터리 규칙은 그대로 산다.
+    /// 이 구분이 흐려지면 사용자가 방전으로 데이터를 잃는다.
+    @Test("★ 시간 상한이 '꺼짐' 이어도 배터리 임계는 그대로 작동한다")
+    func neverLimitStillReleasesOnLowBattery() {
+        let settings = PolicySettings(autoRelease: .never)
+        let snapshot = PowerSnapshot.fake(powerSource: .battery, batteryPercent: 14)
+        let reason = ClamshellPolicy.autoReleaseReason(
+            snapshot, engagedAt: engagedAt,
+            now: engagedAt.addingTimeInterval(60),
+            settings: settings)
+        #expect(reason == .lowBattery)
+    }
+
+    @Test("짧게 고른 상한도 그대로 지켜진다")
+    func shortLimitIsRespected() {
+        let settings = PolicySettings(autoRelease: .after(seconds: 1800))
+        let snapshot = PowerSnapshot.fake(powerSource: .ac, batteryPercent: 100)
+
+        #expect(ClamshellPolicy.autoReleaseReason(
+            snapshot, engagedAt: engagedAt,
+            now: engagedAt.addingTimeInterval(1799), settings: settings) == nil)
+        #expect(ClamshellPolicy.autoReleaseReason(
+            snapshot, engagedAt: engagedAt,
+            now: engagedAt.addingTimeInterval(1801), settings: settings) == .timeout)
     }
 
     @Test("전원 연결 + 시간 내면 해제하지 않는다")

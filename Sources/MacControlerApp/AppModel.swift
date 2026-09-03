@@ -32,7 +32,11 @@ final class AppModel {
     /// 사용자에게 보여줄 마지막 실패/거부 사유.
     private(set) var lastMessage: String?
 
-    var settings = PolicySettings()
+    /// 사용자가 고른 설정. 설정 창에서만 바뀐다.
+    ///
+    /// `@Observable` 은 `didSet` 을 붙인 저장 프로퍼티를 추적하지 못하므로
+    /// 저장·전파는 `setAutoRelease(_:)` 가 명시적으로 한다.
+    private(set) var settings: PolicySettings
 
     private let reader: any PowerStateReading
     @ObservationIgnored private var observer: PowerStateObserver?
@@ -43,6 +47,21 @@ final class AppModel {
     init(reader: any PowerStateReading = IOKitPowerStateReader()) {
         self.reader = reader
         self.snapshot = reader.snapshot()
+        self.settings = PolicySettingsStore.load()
+    }
+
+    /// 자동 해제 시간 상한을 바꾼다.
+    ///
+    /// 디스크에 저장하고, **이미 켜져 있으면 헬퍼에게 즉시 알린다.** 다음 하트비트를
+    /// 기다리면 최대 30초 동안 헬퍼가 옛 상한을 들고 있게 되고, 그 사이에 옛 상한이
+    /// 만료되면 방금 '꺼짐' 으로 바꾼 사용자 눈앞에서 조용히 풀려버린다.
+    func setAutoRelease(_ limit: AutoReleaseLimit) {
+        guard settings.autoRelease != limit else { return }
+        settings.autoRelease = limit
+        PolicySettingsStore.save(settings)
+        Log.model.notice("자동 해제 상한 변경: \(limit.rawValue, privacy: .public)")
+        guard engagedByUs else { return }
+        Task { await self.send(.heartbeat(limit: limit)) }
     }
 
     func start() {
@@ -88,7 +107,7 @@ final class AppModel {
             break
         }
 
-        await send(.engage)
+        await send(.engage(limit: settings.autoRelease))
         adoptEngagementIfNeeded()
     }
 
@@ -223,13 +242,13 @@ final class AppModel {
             notifyAutoRelease(reason, confirmed: confirmed)
             return
         }
-        await send(.heartbeat)
+        await send(.heartbeat(limit: settings.autoRelease))
     }
 
     private func notifyAutoRelease(_ reason: ClamshellPolicy.AutoReleaseReason, confirmed: Bool) {
         let why = switch reason {
         case .lowBattery: "배터리가 \(settings.batteryThresholdPercent)% 아래로 떨어졌습니다."
-        case .timeout: "설정한 최대 시간(\(Int(settings.maximumDuration / 3600))시간)이 지났습니다."
+        case .timeout: "설정한 시간 제한(\(settings.autoRelease.displayName))이 지났습니다."
         }
         let alert = NSAlert()
         if confirmed {
@@ -279,8 +298,16 @@ final class AppModel {
         // 이미 우리가 켠 상태면 끄는 것은 언제나 가능해야 한다.
         guard !engagedByUs else { return nil }
 
-        guard helperStatus != nil else {
+        guard let status = helperStatus else {
             return "헬퍼가 설치되지 않았습니다 (sudo make install-helper)"
+        }
+
+        // 옛 헬퍼는 `engage(limit:)` 의 상한을 무시하고 자기 상수(4시간)를 쓴다.
+        // 그러면 사용자가 '꺼짐' 을 골라도 4시간 뒤에 조용히 풀린다 — 설정 창이
+        // 거짓말을 하게 된다. 조용히 틀리느니 켜지 않는 편이 낫다.
+        guard status.protocolVersion == HelperConstants.protocolVersion else {
+            return "헬퍼가 오래되었습니다 (버전 \(status.protocolVersion), 필요 \(HelperConstants.protocolVersion))"
+                + " — sudo make install-helper"
         }
 
         switch ClamshellPolicy.decide(snapshot, settings: settings) {
@@ -289,6 +316,30 @@ final class AppModel {
         case .engage, .needsConfirmation:
             return nil
         }
+    }
+
+    /// 헬퍼가 실제로 들고 있는 상한. 앱 설정과 다르면 아직 전달되지 않은 것이다.
+    var helperAutoRelease: AutoReleaseLimit? { helperStatus?.autoRelease }
+
+    /// 지금 켜져 있는 engagement 가 언제 자동 해제되는지.
+    ///
+    /// 남은 시간이 아니라 **시각**으로 보여준다. 창을 열어둔 채 시간이 흘러도
+    /// 문구가 틀려지지 않는다.
+    var scheduledReleaseDescription: String {
+        guard let status = helperStatus, status.engagedByUs else {
+            return "켜져 있지 않습니다"
+        }
+        guard let limit = status.autoRelease else {
+            return "헬퍼가 상한을 보고하지 않았습니다"
+        }
+        guard case .after(let seconds) = limit else {
+            return "시간 제한 꺼짐 — 끌 때까지 유지합니다"
+        }
+        guard let engagedAt = status.engagedAt else {
+            return "\(limit.displayName) 뒤 해제"
+        }
+        let due = engagedAt.addingTimeInterval(seconds)
+        return "\(due.formatted(date: .omitted, time: .shortened)) 에 자동 해제 (\(limit.displayName))"
     }
 
     /// 메뉴바에 그릴 SF Symbol.

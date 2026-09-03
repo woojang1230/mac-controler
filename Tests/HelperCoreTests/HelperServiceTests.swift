@@ -25,7 +25,7 @@ struct EngageTests {
         let system = FakeSystem(sleepDisabled: false)
         let service = makeService(system: system, store: makeTemporaryStore())
 
-        _ = service.handle(.engage)
+        _ = service.handle(.engage(limit: .default))
         #expect(system.sleepDisabled == true)
 
         _ = service.handle(.release)
@@ -38,7 +38,7 @@ struct EngageTests {
         let system = FakeSystem(sleepDisabled: true)
         let service = makeService(system: system, store: makeTemporaryStore())
 
-        _ = service.handle(.engage)
+        _ = service.handle(.engage(limit: .default))
         _ = service.handle(.release)
 
         #expect(system.sleepDisabled == true,
@@ -53,7 +53,7 @@ struct EngageTests {
         let store = makeTemporaryStore()
         let service = makeService(system: system, store: store)
 
-        _ = service.handle(.engage)
+        _ = service.handle(.engage(limit: .default))
 
         let saved = try #require(store.load())
         #expect(saved.sleepDisabled == false, "켜기 **전** 값이 저장돼야 한다")
@@ -67,7 +67,7 @@ struct EngageTests {
         let store = makeTemporaryStore()
         let service = makeService(system: system, store: store)
 
-        let reply = service.handle(.engage)
+        let reply = service.handle(.engage(limit: .default))
 
         guard case .denied = reply else {
             Issue.record("쓰기 실패는 denied 여야 한다. 실제: \(reply)")
@@ -82,7 +82,7 @@ struct EngageTests {
         system.freezeKernel()  // 디스크엔 쓰이지만 커널 반영은 안 됨
         let service = makeService(system: system, store: makeTemporaryStore())
 
-        let reply = service.handle(.engage)
+        let reply = service.handle(.engage(limit: .default))
         guard case .notConfirmed = reply else {
             Issue.record("IOReturn 성공만 믿으면 안 된다. 실제: \(reply)")
             return
@@ -94,8 +94,8 @@ struct EngageTests {
         let system = FakeSystem(sleepDisabled: false)
         let service = makeService(system: system, store: makeTemporaryStore())
 
-        _ = service.handle(.engage)
-        let reply = service.handle(.engage)
+        _ = service.handle(.engage(limit: .default))
+        let reply = service.handle(.engage(limit: .default))
 
         guard case .alreadyInDesiredState = reply else {
             Issue.record("두 번째 engage 는 alreadyInDesiredState 여야 한다. 실제: \(reply)")
@@ -121,7 +121,7 @@ struct DivergedStateTests {
         // 지난 세션에서 engage 한 채 종료됐다. baseline 은 '켜기 전 = false'.
         let before = FakeSystem(sleepDisabled: false, bootSession: "SESSION-A")
         _ = makeService(system: before, store: store)
-            .handle(.engage)
+            .handle(.engage(limit: .default))
 
         // 재부팅. 헬퍼(RunAtLoad)가 powerd 의 재적용보다 **먼저** 떴다 —
         // 커널은 아직 false 로 보이지만 디스크에는 true 가 남아 있다.
@@ -147,7 +147,7 @@ struct DivergedStateTests {
 
         // engage 는 디스크에 true 를 쓰지만 커널 반영이 확인되지 않는다.
         system.freezeKernel()
-        let engaged = service.handle(.engage)
+        let engaged = service.handle(.engage(limit: .default))
         guard case .notConfirmed = engaged else {
             Issue.record("커널 미반영이면 notConfirmed 여야 한다. 실제: \(engaged)")
             return
@@ -172,7 +172,7 @@ struct DivergedStateTests {
         let store = makeTemporaryStore()
         let service = makeService(system: system, store: store)
 
-        _ = service.handle(.engage)
+        _ = service.handle(.engage(limit: .default))
         _ = service.handle(.release)
 
         #expect(system.desiredSleepDisabled != true,
@@ -186,7 +186,7 @@ struct DivergedStateTests {
         let system = FakeSystem(sleepDisabled: true, desiredSleepDisabled: true)
         let service = makeService(system: system, store: makeTemporaryStore())
 
-        _ = service.handle(.engage)
+        _ = service.handle(.engage(limit: .default))
         #expect(system.writeCalls.isEmpty, "불필요한 쓰기는 하지 않는다")
     }
 }
@@ -200,7 +200,7 @@ struct WatchdogTests {
         let clock = TestClock()
         let service = makeService(system: system, store: makeTemporaryStore(), clock: clock)
 
-        _ = service.handle(.engage)
+        _ = service.handle(.engage(limit: .default))
         #expect(system.sleepDisabled == true)
 
         clock.advance(HelperConstants.heartbeatTimeout + 1)
@@ -215,12 +215,12 @@ struct WatchdogTests {
         let clock = TestClock()
         let service = makeService(system: system, store: makeTemporaryStore(), clock: clock)
 
-        _ = service.handle(.engage)
+        _ = service.handle(.engage(limit: .default))
 
         // 30초마다 하트비트를 보내며 5분을 보낸다.
         for _ in 0..<10 {
             clock.advance(HelperConstants.heartbeatInterval)
-            _ = service.handle(.heartbeat)
+            _ = service.handle(.heartbeat(limit: .default))
             service.checkHeartbeat()
         }
 
@@ -236,7 +236,7 @@ struct WatchdogTests {
         let clock = TestClock()
 
         _ = makeService(system: system, store: store, clock: clock)
-            .handle(.engage)
+            .handle(.engage(limit: .default))
         #expect(system.sleepDisabled == true)
 
         // 앱은 죽었다. 헬퍼만 30초마다 재시작하며 5시간이 흐른다.
@@ -260,9 +260,9 @@ struct WatchdogTests {
         let clock = TestClock()
 
         _ = makeService(system: system, store: store, clock: clock)
-            .handle(.engage)
+            .handle(.engage(limit: .default))
 
-        clock.advance(HelperConstants.maximumEngagement / 2)
+        clock.advance(2 * 3600)  // 기본 상한 4시간의 절반
         let revived = makeService(system: system, store: store, clock: clock)
         revived.recoverOrphanIfNeeded()
         revived.checkHeartbeat()
@@ -294,7 +294,7 @@ struct OrphanRecoveryTests {
         // 1) 지난 세션에서 engage 한 채 헬퍼가 죽었다.
         let before = FakeSystem(sleepDisabled: false, bootSession: "SESSION-A")
         _ = makeService(system: before, store: store)
-            .handle(.engage)
+            .handle(.engage(limit: .default))
         #expect(before.sleepDisabled == true)
 
         // 2) 재부팅. SleepDisabled 는 영구 저장이라 켜진 채로 살아남는다.
@@ -311,7 +311,7 @@ struct OrphanRecoveryTests {
         let store = makeTemporaryStore()
 
         let system = FakeSystem(sleepDisabled: false, bootSession: "SESSION-A")
-        _ = makeService(system: system, store: store).handle(.engage)
+        _ = makeService(system: system, store: store).handle(.engage(limit: .default))
 
         // 헬퍼만 죽었다 살아남 — 부팅 세션은 그대로.
         let revived = makeService(system: system, store: store)
@@ -325,7 +325,7 @@ struct OrphanRecoveryTests {
     func watchdogResumesAfterRestart() {
         let store = makeTemporaryStore()
         let system = FakeSystem(sleepDisabled: false, bootSession: "SESSION-A")
-        _ = makeService(system: system, store: store).handle(.engage)
+        _ = makeService(system: system, store: store).handle(.engage(limit: .default))
 
         let clock = TestClock()
         let revived = makeService(system: system, store: store, clock: clock)
@@ -341,7 +341,7 @@ struct OrphanRecoveryTests {
     func failedOrphanRestoreIsRetried() {
         let store = makeTemporaryStore()
         let system = FakeSystem(sleepDisabled: false, bootSession: "SESSION-A")
-        _ = makeService(system: system, store: store).handle(.engage)
+        _ = makeService(system: system, store: store).handle(.engage(limit: .default))
 
         // 재부팅 + powerd 가 아직 따라오지 못해 복원 확인이 실패하는 상황.
         system.reboot(as: "SESSION-B")

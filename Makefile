@@ -11,7 +11,7 @@ APP       := dist/$(APP_NAME).app
 HELPER_LABEL := dev.maccontroler.helper
 
 .PHONY: all build app run stop test clean verify logs ax-verify \
-        install-helper reinstall-helper uninstall-helper helper-status logs-helper
+        install-helper reinstall-helper uninstall-helper helper-status logs-helper limit
 
 all: app
 
@@ -84,3 +84,11 @@ helper-status:
 	@sudo launchctl print system/$(HELPER_LABEL) 2>/dev/null \
 		| grep -E '^\s*(state|pid|program) ' \
 		|| echo "헬퍼가 등록되어 있지 않습니다 (make install-helper)"
+
+# 지금 걸려 있는 자동 해제 상한을 시스템 쪽에서 직접 확인한다.
+# 앱 화면이 뭐라고 표시하든 헬퍼가 들고 있는 이 값이 실제로 지켜지는 값이다.
+limit:
+	@echo "앱 설정  : $$(defaults read $(BUNDLE_ID) autoReleaseLimit 2>/dev/null || echo '(미저장 — 기본 14400)')"
+	@sudo cat "/Library/Application Support/dev.maccontroler/baseline.json" 2>/dev/null \
+		| sed 's/^/헬퍼 baseline: /' \
+		|| echo "헬퍼 baseline: (engage 중 아님)"

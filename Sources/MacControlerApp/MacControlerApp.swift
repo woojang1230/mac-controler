@@ -12,5 +12,12 @@ struct MacControlerApp: App {
 
     var body: some Scene {
         MenuBarScene(model: .shared)
+
+        // 옵션 창. `.menu` 스타일 MenuBarExtra 안에서는 `SettingsLink` 가
+        // 이 Scene 을 여는 유일한 정식 경로다 — 메뉴 항목에서 창을 띄우는
+        // 다른 방법들은 전부 비공개 셀렉터에 기댄다.
+        Settings {
+            SettingsView(model: .shared)
+        }
     }
 }

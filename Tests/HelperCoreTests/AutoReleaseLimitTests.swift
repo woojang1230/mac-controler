@@ -35,7 +35,15 @@ struct AutoReleaseLimitTests {
     /// 파싱 단계에서 걸러야 `checkHeartbeat` 가 NaN/음수를 들고 비교하는 일이 없다.
     @Test(
         "말이 안 되는 값은 파싱 단계에서 거부한다",
-        arguments: ["", "abc", "0", "-1", "-3600", "1.5", "nan", "inf", "never ", "NEVER"]
+        arguments: [
+            "", "abc", "0", "-1", "-3600", "1.5", "nan", "inf", "never ", "NEVER",
+            // ★ 상한이 없으면 root 데몬이 트랩으로 죽는다.
+            // TimeInterval 로 올렸다 Int 로 되돌릴 때 2^63 이 Int.max 를 넘는다.
+            "9223372036854775807",
+            "9223372036854775806",
+            "99999999999999999999",
+            "31536001",  // 1년 + 1초
+        ]
     )
     func rejectsNonsense(_ raw: String) {
         #expect(AutoReleaseLimit(rawValue: raw) == nil, "'\(raw)' 를 통과시키면 안 된다")
@@ -43,6 +51,35 @@ struct AutoReleaseLimitTests {
             try JSONDecoder().decode(
                 AutoReleaseLimit.self, from: Data("\"\(raw)\"".utf8))
         }
+    }
+
+    /// 파싱이 통과시킨 값은 **반드시** rawValue 왕복이 되어야 한다.
+    ///
+    /// 이 왕복이 `Int(Double)` 트랩을 밟으면 do/catch 로 못 잡고 프로세스가 죽는다.
+    /// 헬퍼가 그렇게 죽으면 engage 된 채 크래시 루프에 빠지고, 재시작마다
+    /// `lastHeartbeat` 이 리셋되어 워치독과 시간 상한이 동시에 무력화된다.
+    @Test("★ 파싱을 통과한 값은 인코딩에서 트랩하지 않는다")
+    func acceptedValuesNeverTrapOnEncode() throws {
+        let candidates = [
+            "1", "30", "1800", "14400", "31536000",  // 경계: 1초 ~ 1년
+            "9223372036854775807", "99999999999999999999", "31536001",  // 거부돼야 함
+        ]
+        for raw in candidates {
+            guard let limit = AutoReleaseLimit(rawValue: raw) else { continue }
+            // 통과했다면 아래 셋 전부 트랩 없이 돌아야 한다.
+            #expect(limit.rawValue == raw)
+            _ = try JSONEncoder().encode(limit)
+            #expect(try JSONDecoder().decode(
+                AutoReleaseLimit.self, from: JSONEncoder().encode(limit)) == limit)
+        }
+    }
+
+    @Test("경계값: 1초와 1년은 받고 그 밖은 거부한다")
+    func boundaries() {
+        #expect(AutoReleaseLimit(rawValue: "1") == .after(seconds: 1))
+        #expect(AutoReleaseLimit(rawValue: "31536000") == .after(seconds: 31_536_000))
+        #expect(AutoReleaseLimit(rawValue: "0") == nil)
+        #expect(AutoReleaseLimit(rawValue: "31536001") == nil)
     }
 
     @Test("기본값은 4시간이다 — 확정된 제품 결정(DESIGN.md §0)")

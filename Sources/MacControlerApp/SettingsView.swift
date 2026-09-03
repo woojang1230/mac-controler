@@ -66,10 +66,25 @@ struct SettingsView: View {
             } header: {
                 Text("끄지 못하는 안전장치")
             } footer: {
-                Text("시간 제한을 ‘꺼짐’ 으로 두어도 위 셋은 그대로 동작합니다.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 4)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("시간 제한을 ‘꺼짐’ 으로 두어도 위 셋은 그대로 동작합니다.")
+
+                    // 위 문구를 무조건적 보증으로 읽으면 안 된다. 앞의 두 안전장치는
+                    // **헬퍼가 살아 있을 때만** 동작하고, 시간 제한은 헬퍼까지 반복해서
+                    // 죽는 경우에 대한 유일한 방어선이다(DESIGN.md §7-2 (3)).
+                    // '꺼짐' 을 고른 사람에게는 그 사실을 알려야 위험을 제대로 계산한다.
+                    if model.settings.autoRelease == .never {
+                        Label(
+                            "다만 앞의 둘은 헬퍼가 살아 있을 때만 동작합니다."
+                                + " 시간 제한은 헬퍼까지 반복해서 죽는 드문 경우의 마지막 방어선인데,"
+                                + " ‘꺼짐’ 은 그것까지 없앱니다.",
+                            systemImage: "info.circle"
+                        )
+                    }
+                }
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .padding(.top, 4)
             }
         }
         .formStyle(.grouped)

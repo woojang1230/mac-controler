@@ -38,13 +38,20 @@ public struct Baseline: Codable, Sendable, Equatable {
     /// 합성 디코더에 맡기면 '키 없음' 이 곧 nil 이 되어, 안전한 쪽이 아니라
     /// **가장 위험한 쪽**(상한 없음)으로 떨어진다. 옛 헬퍼가 engage 한 채로
     /// 새 헬퍼가 설치되면 바로 이 경로다. 키가 없으면 기본 상한으로 읽는다.
+    ///
+    /// **상한을 못 읽는 것이 복원 근거를 버릴 이유는 되지 않는다.** `try?` 인
+    /// 이유가 이것이다. 여기서 throw 하면 `Baseline` 디코드 전체가 실패하고
+    /// `BaselineStore.load()` 가 파일을 지운다 → 헬퍼는 "engage 한 적 없음" 으로
+    /// 판단 → `SleepDisabled=true` 가 영구 잔존하고, 앱도 "이미 켜져 있습니다" 로
+    /// 토글을 비활성화하므로 사용자에게 되돌릴 방법이 남지 않는다.
+    /// 상한 하나 때문에 `sleepDisabled` 와 `bootSessionUUID` 를 잃으면 안 된다.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         sleepDisabled = try container.decode(Bool.self, forKey: .sleepDisabled)
         bootSessionUUID = try container.decode(String.self, forKey: .bootSessionUUID)
         engagedAt = try container.decode(Date.self, forKey: .engagedAt)
         autoRelease =
-            try container.decodeIfPresent(AutoReleaseLimit.self, forKey: .autoRelease)
+            (try? container.decodeIfPresent(AutoReleaseLimit.self, forKey: .autoRelease))
             ?? .default
     }
 }

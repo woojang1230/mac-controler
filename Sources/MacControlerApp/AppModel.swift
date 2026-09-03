@@ -109,6 +109,14 @@ final class AppModel {
             return
         }
 
+        // UI 비활성화만으로는 부족하다 — 키보드·접근성 경로로도 여기 들어올 수 있다.
+        // 막는 이유가 있으면 실행 경로에서도 막는다.
+        if let mismatch = helperVersionMismatch {
+            lastMessage = mismatch
+            Log.model.notice("engage 안 함: \(mismatch, privacy: .public)")
+            return
+        }
+
         switch ClamshellPolicy.decide(snapshot, settings: settings) {
         case .unnecessary(let reason), .refused(let reason):
             // 시스템을 건드리지 않는다. 이유만 알린다.
@@ -264,8 +272,21 @@ final class AppModel {
             stopHeartbeat()
             self.engagedAt = nil
             // 헬퍼가 복원을 확인하지 못했으면(재시도 대기 중) 완료라고 말하면 안 된다.
+            //
+            // 헬퍼 워치독은 10초마다(`heartbeatInterval/3`), 앱 `beat()` 는 30초마다
+            // 돈다 — 정상 타임아웃에서는 **헬퍼가 먼저 복원하는 것이 보통이다.**
+            // 그때 뒤늦은 `.release` 는 `.alreadyInDesiredState` 를 받는다.
+            // `.applied` 만 성공으로 치면 멀쩡히 해제된 상황에 "확인되지 않았습니다"
+            // 경고가 뜬다. 이미 풀려 있으면(`engagedByUs == false`) 그것이 곧 성공이다.
             var confirmed = false
-            if case .applied = reply { confirmed = true }
+            switch reply {
+            case .applied:
+                confirmed = true
+            case .alreadyInDesiredState(let status):
+                confirmed = !status.engagedByUs
+            default:
+                break
+            }
             notifyAutoRelease(reason, confirmed: confirmed)
             return
         }
@@ -317,6 +338,19 @@ final class AppModel {
         ClamshellPolicy.isEngagementNeeded(snapshot)
     }
 
+    /// 헬퍼 프로토콜 버전이 앱과 다르면 그 사유. 맞으면 nil.
+    ///
+    /// 옛 헬퍼는 `engage(limit:)` 의 상한을 무시하고 자기 상수(4시간)를 쓴다.
+    /// 그러면 사용자가 '꺼짐' 을 골라도 4시간 뒤에 조용히 풀린다 — 설정 창이
+    /// 거짓말을 하게 된다. 조용히 틀리느니 켜지 않는 편이 낫다.
+    private var helperVersionMismatch: String? {
+        guard let status = helperStatus,
+              status.protocolVersion != HelperConstants.protocolVersion
+        else { return nil }
+        return "헬퍼가 오래되었습니다 (버전 \(status.protocolVersion), 필요 \(HelperConstants.protocolVersion))"
+            + " — sudo make install-helper"
+    }
+
     /// 토글을 켤 수 없는 이유. nil 이면 켤 수 있다.
     ///
     /// 눌러도 아무 일이 없는 토글은 고장으로 보인다. 켤 수 없으면 비활성으로
@@ -325,17 +359,11 @@ final class AppModel {
         // 이미 우리가 켠 상태면 끄는 것은 언제나 가능해야 한다.
         guard !engagedByUs else { return nil }
 
-        guard let status = helperStatus else {
+        guard helperStatus != nil else {
             return "헬퍼가 설치되지 않았습니다 (sudo make install-helper)"
         }
 
-        // 옛 헬퍼는 `engage(limit:)` 의 상한을 무시하고 자기 상수(4시간)를 쓴다.
-        // 그러면 사용자가 '꺼짐' 을 골라도 4시간 뒤에 조용히 풀린다 — 설정 창이
-        // 거짓말을 하게 된다. 조용히 틀리느니 켜지 않는 편이 낫다.
-        guard status.protocolVersion == HelperConstants.protocolVersion else {
-            return "헬퍼가 오래되었습니다 (버전 \(status.protocolVersion), 필요 \(HelperConstants.protocolVersion))"
-                + " — sudo make install-helper"
-        }
+        if let mismatch = helperVersionMismatch { return mismatch }
 
         switch ClamshellPolicy.decide(snapshot, settings: settings) {
         case .unnecessary(let reason), .refused(let reason):

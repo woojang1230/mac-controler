@@ -98,6 +98,33 @@ struct ProtocolCodingTests {
         }
     }
 
+    /// 헬퍼는 서명 검증이 불가능한 피어에게서 이 페이로드를 받는다(DESIGN.md §3).
+    /// 상한이 말이 안 되면 **요청 전체가** 디코드에 실패해야 한다 —
+    /// 그래야 `request.accept` 클로저가 아예 실행되지 않는다.
+    @Test(
+        "★ 말이 안 되는 상한이 실린 요청은 통째로 거부된다",
+        arguments: ["9223372036854775807", "99999999999999999999", "-1", "0", "abc", "31536001"]
+    )
+    func maliciousLimitRejectsWholeRequest(_ raw: String) {
+        for verb in ["engage", "heartbeat"] {
+            let payload = Data("{\"\(verb)\":{\"limit\":\"\(raw)\"}}".utf8)
+            #expect(throws: (any Error).self) {
+                try JSONDecoder().decode(HelperRequest.self, from: payload)
+            }
+        }
+    }
+
+    @Test("정상 상한이 실린 요청은 통과한다")
+    func validLimitPassesRequestDecoding() throws {
+        let payload = Data("{\"heartbeat\":{\"limit\":\"1800\"}}".utf8)
+        let decoded = try JSONDecoder().decode(HelperRequest.self, from: payload)
+        guard case .heartbeat(let limit) = decoded else {
+            Issue.record("heartbeat 가 아니다: \(decoded)")
+            return
+        }
+        #expect(limit == .after(seconds: 1800))
+    }
+
     @Test("프로토콜 버전과 하트비트 상수가 일관적이다")
     func constantsAreSane() {
         #expect(HelperConstants.heartbeatInterval < HelperConstants.heartbeatTimeout,

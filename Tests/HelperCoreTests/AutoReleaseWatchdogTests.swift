@@ -174,6 +174,43 @@ struct LimitUpdateTests {
         #expect(store.load()?.autoRelease == .never, "메모리만 바꾸면 재시작에서 갈라진다")
     }
 
+    /// 가드(`saved.autoRelease != limit`)가 사라져도 아무 테스트도 깨지지 않으면
+    /// 30초마다 디스크를 쓰게 된다 — 하루 2880회. 관측 가능한 사실로 못박는다.
+    @Test("★ 같은 상한이 반복 도착해도 디스크에 다시 쓰지 않는다")
+    func repeatedHeartbeatDoesNotRewrite() throws {
+        let store = makeTemporaryStore()
+        let system = FakeSystem(sleepDisabled: false)
+        let clock = TestClock()
+        let service = makeService(system: system, store: store, clock: clock)
+
+        let limit = AutoReleaseLimit.after(seconds: 3600)
+        _ = service.handle(.engage(limit: limit))
+        let afterEngage = try modificationDate(of: store)
+
+        for _ in 0..<10 {
+            clock.advance(HelperConstants.heartbeatInterval)
+            _ = service.handle(.heartbeat(limit: limit))
+        }
+        #expect(try modificationDate(of: store) == afterEngage,
+                "같은 값인데 다시 썼다 — 가드가 사라졌다")
+
+        // 대조군: 값이 바뀌면 반드시 써야 한다.
+        // 이게 없으면 위 단언이 '아무것도 안 쓴다' 로도 통과한다.
+        _ = service.handle(.heartbeat(limit: .never))
+        #expect(try modificationDate(of: store) != afterEngage,
+                "바뀐 값을 안 쓰면 헬퍼 재시작에서 증발한다")
+        #expect(store.load()?.autoRelease == .never)
+    }
+
+    private func modificationDate(of store: BaselineStore) throws -> Date {
+        let attributes = try FileManager.default.attributesOfItem(atPath: store.path)
+        guard let date = attributes[.modificationDate] as? Date else {
+            Issue.record("baseline 파일이 없다")
+            return .distantPast
+        }
+        return date
+    }
+
     @Test("engage 중이 아니면 하트비트가 baseline 을 만들어내지 않는다")
     func heartbeatDoesNotCreateBaseline() {
         let store = makeTemporaryStore()

@@ -61,7 +61,11 @@ struct PolicySettingsStoreTests {
     /// '꺼짐' 은 사용자가 명시적으로 고를 때만 걸리는 값이다.
     @Test(
         "★ 어떤 쓰레기 값도 '꺼짐' 으로 해석되지 않는다",
-        arguments: ["", " ", "abc", "-1", "0", "1.5", "NEVER", "Never", "never!", "nil", "null"]
+        arguments: [
+            "", " ", "abc", "-1", "0", "1.5", "NEVER", "Never", "never!", "nil", "null",
+            // defaults write 로 손수 넣을 수 있는 값이다. 상한이 없으면 설정 창이 죽는다.
+            "9223372036854775807", "99999999999999999999", "31536001",
+        ]
     )
     func garbageNeverBecomesNever(_ raw: String) {
         let defaults = makeDefaults()

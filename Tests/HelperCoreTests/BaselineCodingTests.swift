@@ -37,10 +37,33 @@ struct BaselineCodingTests {
         #expect(decoded.bootSessionUUID == "SESSION-A")
     }
 
-    @Test("깨진 autoRelease 값이면 baseline 전체를 버린다")
-    func corruptLimitRejectsWholeFile() {
+    /// **상한 하나 때문에 복원 근거를 통째로 잃으면 안 된다.**
+    ///
+    /// throw 하면 `BaselineStore.load()` 가 "파싱 실패" 로 보고 파일을 지운다.
+    /// 그러면 헬퍼는 engage 한 적이 없다고 판단하고, `SleepDisabled=true` 가
+    /// 영구히 남는다. 앱도 "이미 켜져 있습니다" 로 토글을 비활성화하므로
+    /// 사용자에게 되돌릴 방법이 하나도 남지 않는다.
+    @Test(
+        "★ 깨진 autoRelease 값이어도 복원 근거는 지킨다",
+        arguments: ["-9", "0", "abc", "9223372036854775807", ""]
+    )
+    func corruptLimitKeepsRestoreAnchor(_ raw: String) throws {
         let broken = Data("""
-            {"sleepDisabled":false,"bootSessionUUID":"S","engagedAt":757339200,"autoRelease":"-9"}
+            {"sleepDisabled":true,"bootSessionUUID":"SESSION-A","engagedAt":757339200,"autoRelease":"\(raw)"}
+            """.utf8)
+        let decoded = try JSONDecoder().decode(Baseline.self, from: broken)
+
+        #expect(decoded.sleepDisabled == true, "복원할 값을 잃으면 되돌릴 방법이 없다")
+        #expect(decoded.bootSessionUUID == "SESSION-A")
+        #expect(decoded.autoRelease == .default, "못 읽은 상한은 안전한 쪽으로")
+        #expect(decoded.autoRelease != .never)
+    }
+
+    @Test("baseline 의 필수 필드가 깨지면 그때는 버린다")
+    func missingRequiredFieldStillThrows() {
+        // 상한과 달리 이쪽은 대체할 안전한 기본값이 없다.
+        let broken = Data("""
+            {"bootSessionUUID":"S","engagedAt":757339200}
             """.utf8)
         #expect(throws: (any Error).self) {
             try JSONDecoder().decode(Baseline.self, from: broken)

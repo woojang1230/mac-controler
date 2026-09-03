@@ -80,11 +80,28 @@ extension AutoReleaseLimit: RawRepresentable {
             return
         }
         // 헬퍼는 서명 검증이 불가능한 피어에게서 이 값을 받는다(DESIGN.md §3).
-        // 음수·0·NaN·소수점을 여기서 잘라내야 `checkHeartbeat` 이 그것을 들고
-        // 비교하는 일이 없다. `Int` 파싱은 "1.5"·"nan"·"inf" 를 전부 거른다.
-        guard let seconds = Int(rawValue), seconds > 0 else { return nil }
+        // 음수·0·NaN·소수점·**과도하게 큰 값**을 여기서 전부 잘라낸다.
+        // `Int` 파싱이 "1.5"·"nan"·"inf" 를 거르고, 상한이 나머지를 거른다.
+        //
+        // ⚠️ 상한이 없으면 root 데몬이 죽는다. `Int(rawValue)` 는
+        // "9223372036854775807" 를 통과시키고, `TimeInterval` 로 올렸다가
+        // `rawValue` 에서 `Int(_:)` 로 되돌릴 때 2^63 이 `Int.max` 를 넘어
+        // **트랩한다**(재현 확인: "Double value cannot be converted to Int").
+        // do/catch 로는 못 잡는다 — 에러가 아니라 프로세스 종료다.
+        // 그러면 engage 된 채로 헬퍼가 크래시 루프에 빠지고, 재시작마다
+        // `recoverOrphanIfNeeded` 가 `lastHeartbeat` 를 리셋해
+        // **하트비트 워치독과 시간 상한이 동시에 무력화된다**(DESIGN.md §7-2 (3)).
+        //
+        // 여기 한 곳만 막으면 `rawValue`·`displayName`·`encode` 의
+        // 모든 `Int(Double)` 변환이 동시에 안전해진다.
+        guard let seconds = Int(rawValue), seconds > 0, seconds <= Self.maximumSeconds
+        else { return nil }
         self = .after(seconds: TimeInterval(seconds))
     }
+
+    /// 받아들이는 최대 초. 1년이면 실질적 무제한이고, 진짜 무제한은 `never` 가 따로 있다.
+    /// 값 자체보다 **유한한 상한이 존재한다는 것**이 중요하다.
+    static let maximumSeconds = 365 * 24 * 3600
 }
 
 extension AutoReleaseLimit: Codable {

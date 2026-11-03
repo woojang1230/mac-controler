@@ -206,8 +206,8 @@ XcodeGen/Tuist 는 이 머신에 미설치 — 외부 툴체인 의존만 추가
 
 ```
 읽기 (root 불필요, 영구 고정)  →  앱 본체가 직접
-쓰기 (root 필요, 3번 갈아끼움) →  protocol SleepControlling
-                                  ├─ Phase 0~1: NoopSleepController   (UI 만 검증)
+쓰기 (root 필요, 3번 갈아끼움) →  XPCSleepController (계획의 protocol SleepControlling 은 구현체가 하나뿐이라 두지 않았다)
+                                  ├─ Phase 0~1: NoopSleepController   (UI 만 검증 — Phase 2 에서 삭제)
                                   ├─ Phase 2~4: XPCSleepController + 수동 LaunchDaemon (서명 불필요)
                                   └─ Phase 5+ : XPCSleepController + SMAppService      (서명/공증 필요)
 ```
@@ -266,15 +266,11 @@ flowchart TB
         MODEL["AppModel<br/><i>@Observable @MainActor</i><br/>단일 진실 소스"]
         READER["PowerStateReader<br/><i>nonisolated, Sendable</i>"]
         POLICY["ClamshellPolicy<br/><i>순수 함수 · 테스트 대상</i>"]
-        PROTO["SleepControlling<br/><i>protocol</i>"]
-        NOOP["NoopSleepController<br/>Phase 0-1"]
-        XPCC["XPCSleepController<br/>Phase 2+"]
-        INST["HelperInstalling<br/><i>protocol</i>"]
+        XPCC["XPCSleepController<br/><i>nonisolated, Sendable</i>"]
 
         APP --> SCENE --> VIEW
         VIEW -.->|read state / send intent| MODEL
-        MODEL --> READER & POLICY & PROTO & INST
-        PROTO -.-> NOOP & XPCC
+        MODEL --> READER & POLICY & XPCC
     end
 
     subgraph SYS["읽기 전용 시스템 소스 · root 불필요 · 전부 검증됨"]
@@ -290,8 +286,8 @@ flowchart TB
     subgraph H["root 데몬 · uid 0 · launchd 상주"]
         LIS["HelperListener<br/>XPCListener(service:)"]
         SVC["HelperService"]
-        BLOCK["SleepBlocker<br/>IOPMSetSystemPowerSetting SPI"]
-        WD["Watchdog<br/>90초 하트비트 타임아웃"]
+        BLOCK["SleepSwitch<br/>IOPMSetSystemPowerSetting SPI"]
+        WD["워치독 (HelperService 내)<br/>90초 하트비트 타임아웃 + 절대 상한"]
         STORE["BaselineStore<br/>baseline.json"]
 
         LIS --> SVC --> BLOCK & WD & STORE
@@ -321,7 +317,7 @@ sequenceDiagram
     participant P as ClamshellPolicy
     participant X as XPCSleepController
     participant H as HelperService (root)
-    participant B as SleepBlocker
+    participant B as SleepSwitch
     participant PD as powerd
     participant RD as IOPMrootDomain
 
@@ -335,22 +331,24 @@ sequenceDiagram
         M-->>V: 경고 + 거부
     else
         P-->>M: .engage
-        M->>X: setSleepDisabled(true)
-        X->>H: .engage(clientPID, bootSessionUUID)
-        H->>B: 현재 SleepDisabled 를 baseline.json 에 저장
+        M->>X: engage(limit)
+        X->>H: .engage(limit:)
+        Note over H: 부팅 세션 UUID 는 인자로 받지 않는다 — 헬퍼가 직접 읽는다
+        H->>H: 현재 SleepDisabled + 부팅 세션 UUID + limit 를 baseline 에 저장<br/>(저장 실패 시 .denied — 되돌릴 방법이 없으면 켜지 않는다)
+        H->>B: apply(true)
         B->>PD: IOPMSetSystemPowerSetting("SleepDisabled", true)
         Note over B,PD: 비동기. 즉시 반영 아님
         PD->>RD: IORegistryEntrySetCFProperty
         B->>RD: 폴링(최대 2초)으로 실적용 확인
-        B-->>H: .applied / .timeout
-        H-->>X: HelperReply
+        B-->>H: Outcome(confirmed: true/false)
+        H-->>X: .applied / .notConfirmed
         X-->>M: 결과
         M-->>V: 아이콘/텍스트 갱신
     end
 
     loop 30초마다
-        M->>H: .heartbeat
-        Note over H: 90초 무응답 → Watchdog 이 baseline 으로 강제 복원
+        M->>H: .heartbeat(limit:)
+        Note over H: 90초 무응답 또는 상한 초과 → 워치독이 baseline 으로 강제 복원
     end
 ```
 
@@ -380,44 +378,60 @@ mac-controler/
 │   │   ├── PowerSnapshot.swift        # Sendable struct
 │   │   ├── PowerStateReading.swift    # protocol (Fake 주입용)
 │   │   ├── IOKitPowerStateReader.swift
-│   │   ├── ClamshellPolicy.swift      # ★ 순수 함수. 테스트의 90%
-│   │   ├── SleepControlling.swift     # protocol
-│   │   ├── NoopSleepController.swift  # Phase 0-1
+│   │   ├── PowerStateObserver.swift   # notify/IOPS/CGDisplay 구독 → 갱신 트리거
+│   │   ├── ClamshellPolicy.swift      # ★ 순수 함수. 개입 판단·경고·상한 표기
+│   │   ├── LimitSyncTracker.swift     # 상한 동기화 진행 추적(세대 판정)
+│   │   ├── PolicySettingsStore.swift  # 앱 쪽 설정 저장. 깨진 값은 기본값으로
 │   │   └── IOKitSPI.swift             # ★ SPI 선언 격리 지점
 │   │
 │   ├── HelperProtocol/            # XPC 계약. 의존성 0
-│   │   ├── HelperRequest.swift        # .engage / .release / .heartbeat / .status
-│   │   ├── HelperReply.swift          # .applied / .alreadyBaseline / .timeout / .denied
-│   │   └── HelperConstants.swift
+│   │   └── HelperProtocol.swift       # HelperRequest(engage/release/heartbeat/status)
+│   │                                  # HelperReply(applied/alreadyInDesiredState/notConfirmed/denied/status)
+│   │                                  # HelperStatus, AutoReleaseLimit, HelperConstants
 │   │
-│   ├── MacControlerApp/           # 메뉴바 앱
-│   │   ├── MacControlerApp.swift      # @main
-│   │   ├── MenuBarScene.swift         # ★ Scene 분리 (갱신 버그 회피)
-│   │   ├── StatusMenuView.swift       # ★ View 분리. 모델 명시 주입
-│   │   ├── SettingsView.swift
-│   │   ├── AppModel.swift             # @Observable @MainActor
-│   │   ├── XPCSleepController.swift
-│   │   ├── HelperInstalling.swift     # protocol
-│   │   └── ManualDaemonInstaller.swift# P5 에 SMAppServiceInstaller 추가
+│   ├── HelperCore/                # root 데몬 로직. swift test 대상 (root 불필요)
+│   │   ├── HelperDaemon.swift         # 리스너 부팅 + 워치독 틱
+│   │   ├── HelperService.swift        # 요청 처리·baseline·워치독 판정
+│   │   ├── SleepSwitch.swift          # ★ SPI 호출 유일 지점 + ioreg 폴링 확인
+│   │   └── BaselineStore.swift        # /Library/Application Support/dev.maccontroler
 │   │
-│   └── MacControlerHelper/        # root 데몬
-│       ├── main.swift                 # 리스너 부팅 + 부팅세션 고아 복구
-│       ├── HelperService.swift
-│       ├── SleepBlocker.swift         # ★ SPI 호출 유일 지점
-│       ├── Watchdog.swift
-│       └── BaselineStore.swift
+│   ├── MacControlerHelper/        # root 데몬 진입점
+│   │   └── main.swift
+│   │
+│   └── MacControlerApp/           # 메뉴바 앱
+│       ├── MacControlerApp.swift      # @main
+│       ├── MenuBarScene.swift         # ★ Scene 분리 (갱신 버그 회피)
+│       ├── StatusMenuView.swift       # ★ View 분리. 모델 명시 주입
+│       ├── SettingsView.swift         # 자동 해제 상한 선택
+│       ├── AppModel.swift             # @Observable @MainActor
+│       ├── XPCSleepController.swift
+│       └── Diagnostics.swift
 │
-├── Tests/ClamshellCoreTests/
-│   ├── ClamshellPolicyTests.swift # Swift Testing
-│   └── FakePowerStateReader.swift
+├── Tests/
+│   ├── ClamshellCoreTests/        # Swift Testing
+│   │   ├── ClamshellPolicyTests.swift
+│   │   ├── ClamshellDecisionTests.swift
+│   │   ├── AutoReleaseDisplayTests.swift
+│   │   ├── LimitMismatchWarningTests.swift
+│   │   ├── LimitSyncTrackerTests.swift
+│   │   ├── PolicySettingsStoreTests.swift
+│   │   └── PowerSnapshot+Fake.swift
+│   └── HelperCoreTests/
+│       ├── HelperServiceTests.swift
+│       ├── AutoReleaseWatchdogTests.swift
+│       ├── AutoReleaseLimitTests.swift
+│       ├── BaselineCodingTests.swift
+│       ├── ProtocolCodingTests.swift
+│       └── Fakes.swift
 │
 ├── Resources/
 │   ├── App-Info.plist             # LSUIElement=true, LSMinimumSystemVersion=26.0
-│   ├── helper-launchd.plist
-│   └── App.entitlements           # 샌드박스 OFF
+│   └── helper-launchd.plist
 │
 └── Scripts/
-    ├── bundle.sh / install-helper.sh / uninstall-helper.sh / verify.sh
+    ├── bundle.sh / install-helper.sh / uninstall-helper.sh
+    ├── ax-verify.swift            # 메뉴를 접근성 API 로 눌러 확인
+    └── clamshell-test.sh / sleepgate-test.sh
 ```
 
 ### Package.swift 골자
@@ -512,7 +526,7 @@ let kSleepDisabledKey = "SleepDisabled" as CFString
 ### Phase 1 — 읽기 전용 상태판 (1~2일)
 root 없이 얻을 수 있는 모든 상태를 실시간 표시. 시스템은 전혀 건드리지 않는다.
 
-**산출물**: `ClamshellCore` 전체, `AppModel`, `NoopSleepController`, 테스트. notify/IOPS/CGDisplay 구독.
+**산출물**: `ClamshellCore` 전체, `AppModel`, 테스트. (계획의 `NoopSleepController` 는 Phase 2 에서 `XPCSleepController` 로 대체되어 남아 있지 않다.) notify/IOPS/CGDisplay 구독.
 
 **완료조건**:
 1. 메뉴에 5개 값 표시 — 뚜껑 상태, SleepDisabled 실적용값, AppleClamshellCausesSleep, 전원+배터리%, 외부 디스플레이 수
@@ -523,7 +537,7 @@ root 없이 얻을 수 있는 모든 상태를 실시간 표시. 시스템은 �
 ### Phase 2 — root 헬퍼와 첫 토글 (2~3일)
 메뉴 토글로 실제 SleepDisabled 가 바뀐다. 비밀번호는 설치 때 딱 한 번.
 
-**산출물**: `HelperProtocol`, `MacControlerHelper`, `helper-launchd.plist`, install/uninstall 스크립트, `XPCSleepController`, `ManualDaemonInstaller`.
+**산출물**: `HelperProtocol`, `MacControlerHelper`, `helper-launchd.plist`, install/uninstall 스크립트, `XPCSleepController`. (계획의 `ManualDaemonInstaller` 는 `make install-helper` 스크립트로 대신했다.)
 
 **완료조건**:
 1. `sudo make install-helper` 1회 후 재부팅 없이 헬퍼 기동 (`sudo launchctl print system/<label>`)
@@ -572,10 +586,10 @@ root 없이 얻을 수 있는 모든 상태를 실시간 표시. 시스템은 �
 
 | 심각도 | 리스크 | 완화 |
 |---|---|---|
-| **치명** | **되돌리기 실패** — SleepDisabled 는 `/Library/Preferences/com.apple.PowerManagement.plist` 에 영구 저장되고 powerd 가 부팅 시 재적용. 크래시·강제종료·로그아웃·재부팅 어디서도 자동 원복 안 됨 | ① baseline 스냅샷 후 그 값으로만 복원 ② 하트비트 90초 워치독(**sudoers 안을 탈락시킨 결정적 이유**) ③ BootSessionUUID 불일치 감지 ④ uninstall 이 파일 제거 전 반드시 원복 ⑤ engaged 상태 아이콘 시각 구분.<br>**Phase 2 에서 ①②③ 을 자동 테스트로 고정** (`HelperCoreTests`, 13개): 남이 켜둔 값을 release 해도 유지 / 하트비트 끊기면 원복 / 재부팅 세션 불일치 시 기동 즉시 원복 / 같은 세션 재시작은 워치독에 위임 / 쓰기 실패 시 baseline 미잔류 |
-| **치명** | **배터리 방전 사고** — 커널에서 `userDisabledAllSleep` 이 `lowBatteryCondition` 보다 먼저 검사되어 긴급 슬립이 차단될 수 있음. 뚜껑 닫힌 채 가방 속 완전 방전 → 미저장 작업 손실 | 소스 근거는 있으나 실기 미검증(파괴적 테스트라 미실행) → 앱이 직접 방어: 배터리 전원 engage 경고/거부, 잔량 15% 자동 원복 + 알림, 절대 타임아웃 4시간, 뚜껑닫힘+고발열 시 강제 해제 |
-| 높음 | root XPC 리스너가 LPE 통로가 됨 | **개인 전용 확정 + 서명 신원 0개 → 팀 ID 가 없어 암호학적 피어 검증이 원리적으로 불가.** 이 상태가 영구적이므로 완화책도 영구다: ① 엔드포인트를 `setSleepDisabled`/`heartbeat`/`status` 3개로 최소화 ② 정책 판단은 전부 비특권 앱 쪽에 두고 헬퍼는 '값 하나 설정'만 ③ 헬퍼 파일/디렉터리 권한 절대 미완화 ④ **이 맥 외부로 배포하지 않음이 전제** — 배포하려면 Phase 5(서명+`XPCPeerRequirement.isFromSameTeam`)가 선행되어야 한다 |
-| 높음 | **비문서 인터페이스 의존** — `disablesleep` 은 man 에 없고 `IOPMSetSystemPowerSetting` 은 공개 헤더에 선언 없음 | SPI 선언을 `IOKitSPI.swift` 한 파일에, 호출을 `SleepBlocker.swift` 한 곳에 격리. `IOReturn == success` 를 신뢰하지 말고 **항상 ioreg 로 사후 검증**. 실패를 정상 시나리오로 처리. UI 에 '비공식 시스템 설정 변경' 고지 |
+| **치명** | **되돌리기 실패** — SleepDisabled 는 `/Library/Preferences/com.apple.PowerManagement.plist` 에 영구 저장되고 powerd 가 부팅 시 재적용. 크래시·강제종료·로그아웃·재부팅 어디서도 자동 원복 안 됨 | ① baseline 스냅샷 후 그 값으로만 복원 ② 하트비트 90초 워치독(**sudoers 안을 탈락시킨 결정적 이유**) ③ BootSessionUUID 불일치 감지 ④ uninstall 이 파일 제거 전 반드시 원복 ⑤ engaged 상태 아이콘 시각 구분.<br>**Phase 2 에서 ①②③ 을 자동 테스트로 고정** (`HelperCoreTests`, 50개): 남이 켜둔 값을 release 해도 유지 / 하트비트 끊기면 원복 / 재부팅 세션 불일치 시 기동 즉시 원복 / 같은 세션 재시작은 워치독에 위임 / 쓰기 실패 시 baseline 미잔류 |
+| **치명** | **배터리 방전 사고** — 커널에서 `userDisabledAllSleep` 이 `lowBatteryCondition` 보다 먼저 검사되어 긴급 슬립이 차단될 수 있음. 뚜껑 닫힌 채 가방 속 완전 방전 → 미저장 작업 손실 | 소스 근거는 있으나 실기 미검증(파괴적 테스트라 미실행) → 앱이 직접 방어: 배터리 전원 engage 경고/거부, 잔량 15% 자동 원복 + 알림, 절대 타임아웃(기본 4시간, 옵션 창에서 변경 가능). 뚜껑닫힘+고발열 시 강제 해제는 **미구현** — Phase 3+ 후보 |
+| 높음 | root XPC 리스너가 LPE 통로가 됨 | **개인 전용 확정 + 서명 신원 0개 → 팀 ID 가 없어 암호학적 피어 검증이 원리적으로 불가.** 이 상태가 영구적이므로 완화책도 영구다: ① 엔드포인트를 `engage`/`release`/`heartbeat`/`status` 4개로 최소화 ② 정책 판단은 전부 비특권 앱 쪽에 두고 헬퍼는 '값 하나 설정'만 ③ 헬퍼 파일/디렉터리 권한 절대 미완화 ④ **이 맥 외부로 배포하지 않음이 전제** — 배포하려면 Phase 5(서명+`XPCPeerRequirement.isFromSameTeam`)가 선행되어야 한다 |
+| 높음 | **비문서 인터페이스 의존** — `disablesleep` 은 man 에 없고 `IOPMSetSystemPowerSetting` 은 공개 헤더에 선언 없음 | SPI 선언을 `IOKitSPI.swift` 한 파일에, 호출을 `HelperCore/SleepSwitch.swift` 한 곳에 격리. `IOReturn == success` 를 신뢰하지 말고 **항상 ioreg 로 사후 검증**. 실패를 정상 시나리오로 처리. UI 에 '비공식 시스템 설정 변경' 고지 |
 | 중간 | root 만 있으면 `IORegistryEntrySetCFProperty` 로 직접 쓸 수 있다는 오해 | 엔타이틀먼트가 없으면 root 여도 `kIOReturnNotPermitted`. 반드시 prefs+powerd 간접 경로. **비동기**이므로 폴링으로 감쌈. 근거를 XNU 인용과 함께 코드 주석에 남겨 재논의 차단 |
 | ~~중간~~ → **해소** | ~~MenuBarExtra 콘텐츠 미갱신 버그(포럼 720625)~~ | **Phase 1 에서 실측 — macOS 26.3.1 에서 재현되지 않는다.** `caffeinate` 로 슬립 차단 프로세스를 늘린 뒤 갱신하자 메뉴 항목이 `슬립 막는 프로세스 3개` → `4개` 로 바뀌는 것을 접근성 API 로 확인. Scene/View 분리 + `@Observable` 명시 주입 구조는 유지하되 **NSStatusItem 전환은 불필요** |
 | 중간 | SMAppService 개발 루프 함정 — plist/헬퍼가 바뀌면 재등록해야 반영 | Phase 2 부터 `make reinstall-helper` 를 만들어 개발 루프 인터페이스를 미리 고정 |

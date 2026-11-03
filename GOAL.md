@@ -48,7 +48,7 @@
 1. **baseline을 존중한다.** engage 전 현재 `SleepDisabled` 를 읽어 저장하고,
    release 시 **그 값으로만** 복원한다. 무조건 0으로 덮지 않는다.
 2. **SPI는 한 파일에.** `ClamshellCore/IOKitSPI.swift` 외에는 SPI를 선언하지 않고,
-   `SleepBlocker.swift` 외에는 호출하지 않는다.
+   `HelperCore/SleepSwitch.swift` 외에는 호출하지 않는다.
 3. **`IOReturn == success` 를 믿지 않는다.** powerd 경유라 비동기다.
    항상 `ioreg` 로 실적용을 폴링 확인한다.
 4. **`/usr/bin/log` 절대경로.** zsh에서 `log` 는 빌트인이라 깨진다.
@@ -70,7 +70,7 @@
 ## Phase 1 — 읽기 전용 상태판 (1~2일) · 시스템 미변경
 
 산출물: `ClamshellCore` 전체(`PowerSnapshot`, `PowerStateReading`, `IOKitPowerStateReader`,
-`ClamshellPolicy`), `AppModel`(@Observable), `NoopSleepController`, `Tests/ClamshellCoreTests`
+`ClamshellPolicy`), `AppModel`(@Observable), `Tests/ClamshellCoreTests`
 
 표시 항목 (전부 root 불필요):
 뚜껑 상태 / `SleepDisabled` 실적용값 / `AppleClamshellCausesSleep` /
@@ -92,9 +92,9 @@
 > 이것들 없이 토글만 내보내면 앱 크래시 시 맥이 영영 안 잔다 (치명 리스크 #1).
 > 안전장치를 빼고 P2를 "완료"라고 부르지 말 것.
 
-산출물: `HelperProtocol`, `MacControlerHelper`(main / HelperService / SleepBlocker /
-`Watchdog` / `BaselineStore`), `helper-launchd.plist`, install·uninstall 스크립트,
-`XPCSleepController`, `ManualDaemonInstaller`, `ClamshellPolicy.decide`
+산출물: `HelperProtocol`, `HelperCore`(HelperDaemon / HelperService / SleepSwitch /
+BaselineStore), `MacControlerHelper`(main), `helper-launchd.plist`, install·uninstall 스크립트,
+`XPCSleepController`, `ClamshellPolicy.decide`
 
 완료 조건:
 - [ ] `sudo make install-helper` 1회 후 재부팅 없이 헬퍼 기동
@@ -117,7 +117,7 @@ Stats / Lidless / AlDente 가 실제로 쓰는 검증된 경로다. 여기서 �
 ### 알려진 제약 (수용하고 진행)
 
 서명 신원이 0개라 XPC 피어의 암호학적 검증이 원리적으로 불가능하다.
-완화책으로 엔드포인트를 `setSleepDisabled` / `heartbeat` / `status` 3개로 제한하고,
+완화책으로 엔드포인트를 `engage` / `release` / `heartbeat` / `status` 4개로 제한하고,
 정책 판단은 전부 비특권 앱 쪽에 두며, 헬퍼는 "값 하나 설정"만 한다.
 **이 맥 외부로 배포하지 않음이 전제다.**
 

@@ -18,9 +18,12 @@ struct ProtocolCodingTests {
     @Test(
         "HelperRequest 왕복",
         arguments: [
-            HelperRequest.engage,
+            HelperRequest.engage(limit: .default),
+            .engage(limit: .never),
+            .engage(limit: .after(seconds: 1800)),
             .release,
-            .heartbeat,
+            .heartbeat(limit: .default),
+            .heartbeat(limit: .never),
             .status,
         ]
     )
@@ -30,8 +33,9 @@ struct ProtocolCodingTests {
 
         // HelperRequest 는 Equatable 이 아니므로 케이스로 비교한다.
         switch (request, decoded) {
-        case (.engage, .engage), (.release, .release),
-             (.heartbeat, .heartbeat), (.status, .status):
+        case (.engage(let a), .engage(let b)), (.heartbeat(let a), .heartbeat(let b)):
+            #expect(a == b, "상한이 왕복에서 바뀌면 헬퍼가 다른 시간에 풀어버린다")
+        case (.release, .release), (.status, .status):
             break
         default:
             Issue.record("케이스가 바뀌었다: \(request) → \(decoded)")
@@ -47,7 +51,8 @@ struct ProtocolCodingTests {
             engagedBootSessionUUID: "SESSION-A",
             // 앱이 재시작 후 engagement 를 인수하려면 이 값이 살아남아야 한다.
             engagedAt: Date(timeIntervalSince1970: 1_700_000_000),
-            secondsSinceHeartbeat: 12.5
+            secondsSinceHeartbeat: 12.5,
+            autoRelease: .never
         )
         let decoded = try roundTrip(status)
         #expect(decoded == status)
@@ -93,6 +98,33 @@ struct ProtocolCodingTests {
         }
     }
 
+    /// 헬퍼는 서명 검증이 불가능한 피어에게서 이 페이로드를 받는다(DESIGN.md §3).
+    /// 상한이 말이 안 되면 **요청 전체가** 디코드에 실패해야 한다 —
+    /// 그래야 `request.accept` 클로저가 아예 실행되지 않는다.
+    @Test(
+        "★ 말이 안 되는 상한이 실린 요청은 통째로 거부된다",
+        arguments: ["9223372036854775807", "99999999999999999999", "-1", "0", "abc", "31536001"]
+    )
+    func maliciousLimitRejectsWholeRequest(_ raw: String) {
+        for verb in ["engage", "heartbeat"] {
+            let payload = Data("{\"\(verb)\":{\"limit\":\"\(raw)\"}}".utf8)
+            #expect(throws: (any Error).self) {
+                try JSONDecoder().decode(HelperRequest.self, from: payload)
+            }
+        }
+    }
+
+    @Test("정상 상한이 실린 요청은 통과한다")
+    func validLimitPassesRequestDecoding() throws {
+        let payload = Data("{\"heartbeat\":{\"limit\":\"1800\"}}".utf8)
+        let decoded = try JSONDecoder().decode(HelperRequest.self, from: payload)
+        guard case .heartbeat(let limit) = decoded else {
+            Issue.record("heartbeat 가 아니다: \(decoded)")
+            return
+        }
+        #expect(limit == .after(seconds: 1800))
+    }
+
     @Test("프로토콜 버전과 하트비트 상수가 일관적이다")
     func constantsAreSane() {
         #expect(HelperConstants.heartbeatInterval < HelperConstants.heartbeatTimeout,
@@ -103,5 +135,9 @@ struct ProtocolCodingTests {
             effectiveSleepDisabled: false, baselineSleepDisabled: nil,
             engagedByUs: false, engagedBootSessionUUID: nil, secondsSinceHeartbeat: nil
         ).protocolVersion == HelperConstants.protocolVersion)
+
+        // 상한을 프로토콜에 실은 변경이므로 버전이 올라가 있어야 한다.
+        // 옛 헬퍼는 상한을 무시하고 자기 상수를 쓰므로 앱이 이걸로 걸러낸다.
+        #expect(HelperConstants.protocolVersion >= 2)
     }
 }

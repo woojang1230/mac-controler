@@ -1,17 +1,66 @@
 import CoreGraphics
 import Foundation
+import HelperProtocol
 
 /// 사용자가 바꿀 수 있는 안전 임계값.
 ///
 /// 기본값은 확정된 제품 결정에서 나왔다 — 배터리에서 "경고 후 허용",
 /// 15% 자동 해제, 4시간 절대 타임아웃. DESIGN.md §0 참조.
+///
+/// 시간 상한은 설정 창에서 바꿀 수 있고 '꺼짐' 도 고를 수 있다.
+/// 배터리 임계는 아직 고정이다 — 방전은 되돌릴 수 없는 손실이라
+/// 시간 상한과 같은 급으로 다루지 않는다.
 public struct PolicySettings: Sendable, Equatable {
     public var batteryThresholdPercent: Int
-    public var maximumDuration: TimeInterval
+    public var autoRelease: AutoReleaseLimit
 
-    public init(batteryThresholdPercent: Int = 15, maximumDuration: TimeInterval = 4 * 3600) {
+    public init(
+        batteryThresholdPercent: Int = 15,
+        autoRelease: AutoReleaseLimit = .default
+    ) {
         self.batteryThresholdPercent = batteryThresholdPercent
-        self.maximumDuration = maximumDuration
+        self.autoRelease = autoRelease
+    }
+}
+
+extension AutoReleaseLimit {
+    /// 설정 창과 메뉴에 그대로 나가는 이름.
+    public var displayName: String {
+        guard case .after = self else { return "꺼짐" }
+
+        // `rawValue` 가 이미 유한 범위로 접은 값이다. 여기서 `Int(Double)` 을
+        // 다시 하면 접기 전 값에 닿아 트랩할 수 있다. 접는 곳은 한 군데뿐이어야 한다.
+        let total = Int(rawValue) ?? 0
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let rest = total % 60
+
+        var parts: [String] = []
+        if hours > 0 { parts.append("\(hours)시간") }
+        if minutes > 0 { parts.append("\(minutes)분") }
+        // 초는 프리셋에 없지만, 값이 어디서 오든 빈 문자열이 되면 안 된다.
+        if rest > 0 || parts.isEmpty { parts.append("\(rest)초") }
+        return parts.joined(separator: " ")
+    }
+
+    /// 설정 창 Picker 가 보여줄 선택지.
+    ///
+    /// 프리셋 밖의 값이 저장돼 있을 수 있다 — `defaults write` 로 넣거나
+    /// 프리셋 목록이 나중에 바뀌면 그렇다. 그 값을 목록에 넣지 않으면
+    /// Picker 가 어느 태그와도 안 맞아 **빈칸**이 되고, 사용자는 현재 설정이
+    /// 무엇인지 화면에서 알 수 없게 된다.
+    public static func choices(including current: AutoReleaseLimit) -> [AutoReleaseLimit] {
+        guard !presets.contains(current) else { return presets }
+        guard case .after(let seconds) = current else { return presets }
+
+        // 짧은 것부터 정렬된 자리에 끼워 넣는다. `never` 는 항상 마지막이다.
+        let index = presets.firstIndex { preset in
+            guard case .after(let other) = preset else { return true }
+            return other > seconds
+        } ?? presets.count
+        var all = presets
+        all.insert(current, at: index)
+        return all
     }
 }
 
@@ -95,7 +144,11 @@ public enum ClamshellPolicy {
            percent < settings.batteryThresholdPercent {
             return .lowBattery
         }
-        if now.timeIntervalSince(engagedAt) > settings.maximumDuration {
+        // '꺼짐' 이면 시간으로는 풀지 않는다. 배터리 규칙은 위에서 이미 걸렀다 —
+        // 순서가 중요하다. 시간 검사를 먼저 두고 early return 하면 '꺼짐' 이
+        // 배터리 규칙까지 건너뛰게 만들기 쉽다.
+        if case .after(let seconds) = settings.autoRelease,
+           now.timeIntervalSince(engagedAt) > seconds {
             return .timeout
         }
         return nil
@@ -119,6 +172,25 @@ public enum ClamshellPolicy {
         // 외부 디스플레이가 붙어 있으면 그래픽스가 이미 클램쉘 슬립을 꺼둔 상태다.
         guard snapshot.externalDisplayCount == 0 else { return false }
         return !isAwakeOnLidClose(snapshot)
+    }
+
+    /// "헬퍼는 아직 옛 상한으로 동작 중" 경고를 띄워야 하는가.
+    ///
+    /// 이 경고의 목적은 **수렴하지 않는 괴리**를 알리는 것이다. 설정 창에서 값을
+    /// 바꾸면 앱 설정은 즉시 바뀌고 헬퍼 응답은 왕복 뒤에 온다(실측 33밀리초).
+    /// 그 사이를 괴리로 치면 값을 바꿀 때마다 경고가 깜빡였다 사라진다 —
+    /// 알림이 아니라 노이즈다. 그래서 **왕복이 끝난 뒤에도** 갈라져 있을 때만 띄운다.
+    ///
+    /// 헬퍼 상한을 모르는 경우(nil)도 띄우지 않는다. engage 중이 아니거나 XPC 가
+    /// 실패한 상태이고, 둘 다 "상한이 어긋났다" 와는 다른 이야기다.
+    /// XPC 실패는 `lastMessage` 가 따로 알린다.
+    public static func shouldWarnLimitMismatch(
+        appLimit: AutoReleaseLimit,
+        helperLimit: AutoReleaseLimit?,
+        isSyncing: Bool
+    ) -> Bool {
+        guard !isSyncing, let helperLimit else { return false }
+        return helperLimit != appLimit
     }
 
     /// 메뉴바 아이템이 사용자 눈에 보이는 자리에 있는가.

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>MacControler</string>
+	<key>CFBundleDisplayName</key>
+	<string>MacControler</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.maccontroler.app</string>
+	<key>CFBundleExecutable</key>
+	<string>MacControlerApp</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
+	<!-- 메뉴바 전용 앱. Dock 아이콘과 ⌘Tab 전환기에서 제외된다. -->
+	<key>LSUIElement</key>
+	<true/>
+</dict>
+</plist>

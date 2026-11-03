@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.maccontroler.helper</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Library/PrivilegedHelperTools/dev.maccontroler.helper</string>
+	</array>
+
+	<!-- 앱이 XPCSession(machService:) 로 붙는 이름. HelperConstants 와 일치해야 한다. -->
+	<key>MachServices</key>
+	<dict>
+		<key>dev.maccontroler.helper</key>
+		<true/>
+	</dict>
+
+	<!-- 온디맨드로만 뜨면 워치독이 돌지 못한다. 상주해야 한다. -->
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+
+	<key>ProcessType</key>
+	<string>Background</string>
+</dict>
+</plist>
